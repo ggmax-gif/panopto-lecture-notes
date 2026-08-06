@@ -1,0 +1,580 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lecture library</title>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --sunk: #010409; --line: #30363d;
+    --fg: #e6edf3; --dim: #8b949e; --accent: #58a6ff; --good: #3fb950;
+    --warn: #d29922; --bad: #f85149;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; height: 100vh; display: flex; overflow: hidden;
+    background: var(--bg); color: var(--fg);
+    font: 14px/1.55 system-ui, -apple-system, sans-serif;
+  }
+  button {
+    font: inherit; cursor: pointer; color: var(--fg); background: #21262d;
+    border: 1px solid var(--line); border-radius: 6px; padding: 5px 11px;
+  }
+  button:hover { background: #30363d; }
+  button.primary { background: #1f6feb; border-color: #1f6feb; }
+  button.primary:hover { background: #388bfd; }
+  button:disabled { opacity: .5; cursor: default; }
+
+  /* ---------------- sidebar ---------------- */
+  #side {
+    width: 290px; flex: 0 0 auto; display: flex; flex-direction: column;
+    background: var(--panel); border-right: 1px solid var(--line);
+  }
+  #side header {
+    padding: 14px 16px; border-bottom: 1px solid var(--line);
+    display: flex; align-items: baseline; justify-content: space-between;
+  }
+  #side h1 { margin: 0; font-size: 15px; }
+  #side .sub { color: var(--dim); font-size: 11px; }
+  #add { padding: 10px 12px; border-bottom: 1px solid var(--line); }
+  #add input {
+    width: 100%; padding: 7px 9px; margin-bottom: 6px; border-radius: 6px;
+    border: 1px solid var(--line); background: var(--sunk); color: var(--fg);
+    font: 12px system-ui, sans-serif;
+  }
+  #add input:focus { outline: none; border-color: var(--accent); }
+  #add .row { display: flex; gap: 6px; }
+  #add button { flex: 1; }
+  #add .check { display: flex; align-items: center; gap: 6px; margin-bottom: 7px;
+                font-size: 11px; color: var(--dim); cursor: pointer; }
+  #add .check input { accent-color: var(--accent); }
+  #add .hint { margin-top: 6px; font-size: 11px; color: var(--dim); line-height: 1.45; }
+  .novideo {
+    padding: 14px 16px; background: var(--sunk); border-bottom: 1px solid var(--line);
+    font-size: 12px; color: var(--dim); display: flex; align-items: center;
+    justify-content: space-between; gap: 12px;
+  }
+  #add .hint.err { color: var(--bad); }
+  #tree { overflow-y: auto; flex: 1; padding: 8px 0 20px; }
+  .mod { padding: 12px 16px 4px; color: var(--dim);
+         font-size: 11px; letter-spacing: .06em; text-transform: uppercase; }
+  .lec { padding: 8px 16px; cursor: pointer; border-left: 2px solid transparent; }
+  .lec:hover { background: #1c2128; }
+  .lec.on { background: #1c2128; border-left-color: var(--accent); }
+  .lec .t { display: block; font-size: 13px; }
+  .lec .m { color: var(--dim); font-size: 11px; }
+  .pill {
+    display: inline-block; margin-right: 4px; padding: 0 5px; border-radius: 4px;
+    font-size: 10px; background: #21262d; color: var(--dim);
+  }
+  .pill.ok { color: var(--good); }
+
+  /* ---------------- main ---------------- */
+  #main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  #bar {
+    display: flex; align-items: center; gap: 10px; padding: 10px 16px;
+    background: var(--panel); border-bottom: 1px solid var(--line);
+  }
+  #bar .title { font-weight: 600; overflow: hidden; text-overflow: ellipsis;
+                white-space: nowrap; flex: 1; }
+  #body { flex: 1; display: flex; min-height: 0; }
+  #left { flex: 1.15; display: flex; flex-direction: column; min-width: 0;
+          border-right: 1px solid var(--line); }
+  #right { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+
+  video { width: 100%; background: #000; max-height: 42vh; }
+  #rail {
+    display: flex; gap: 6px; overflow-x: auto; padding: 8px;
+    background: var(--sunk); border-bottom: 1px solid var(--line);
+  }
+  #rail img {
+    height: 60px; border-radius: 4px; cursor: pointer; opacity: .55;
+    border: 2px solid transparent; flex: 0 0 auto;
+  }
+  #rail img:hover { opacity: 1; }
+  #rail img.on { opacity: 1; border-color: var(--accent); }
+
+  #transcript { flex: 1; overflow-y: auto; padding: 6px 14px 40px; }
+  .seg { display: flex; gap: 9px; padding: 3px 6px; border-radius: 5px; cursor: pointer; }
+  .seg:hover { background: #1c2128; }
+  .seg.on { background: #1f6feb22; }
+  .seg .ts { color: var(--accent); font: 11px ui-monospace, Menlo, monospace;
+             flex: 0 0 52px; padding-top: 3px; }
+  .slidemark {
+    margin: 10px 0 6px; padding: 5px 8px; border-left: 2px solid var(--warn);
+    background: #1c2128; border-radius: 0 5px 5px 0; font-size: 12px;
+    color: var(--dim); cursor: pointer;
+  }
+
+  #tabs { display: flex; gap: 4px; padding: 8px 12px 0; background: var(--panel);
+          border-bottom: 1px solid var(--line); overflow-x: auto; }
+  .tab { padding: 6px 12px; border-radius: 6px 6px 0 0; font-size: 12px;
+         cursor: pointer; color: var(--dim); white-space: nowrap; }
+  .tab.on { background: var(--bg); color: var(--fg); }
+  #notes { flex: 1; overflow-y: auto; padding: 4px 20px 40px; }
+  #notes h1 { font-size: 19px; margin: 18px 0 8px; }
+  #notes h2 { font-size: 16px; margin: 18px 0 6px; color: var(--accent); }
+  #notes h3, #notes h4 { font-size: 14px; margin: 14px 0 4px; color: #a5d6ff; }
+  #notes li { margin: 4px 0; }
+  #notes code { background: #21262d; padding: 1px 5px; border-radius: 5px;
+                font: 12px ui-monospace, Menlo, monospace; color: #ffa657; }
+  #notes .cite { color: var(--accent); cursor: pointer; text-decoration: underline dotted; }
+  #notes blockquote { margin: 8px 0; padding-left: 12px; border-left: 3px solid var(--line);
+                      color: var(--dim); }
+
+  #verify { padding: 10px 16px; border-top: 1px solid var(--line);
+            background: var(--panel); font-size: 12px; }
+  #verify .row { display: flex; gap: 16px; flex-wrap: wrap; }
+  #verify b { color: var(--fg); }
+  .good { color: var(--good); } .bad { color: var(--bad); } .dim { color: var(--dim); }
+
+  #log {
+    display: none; padding: 8px 16px; background: var(--sunk);
+    border-top: 1px solid var(--line); max-height: 22vh; overflow-y: auto;
+    font: 11px/1.5 ui-monospace, Menlo, monospace; color: var(--dim);
+    white-space: pre-wrap;
+  }
+  .empty { padding: 40px; color: var(--dim); text-align: center; }
+</style>
+</head>
+<body>
+
+<div id="side">
+  <header>
+    <h1>Lectures</h1>
+    <span class="sub" id="backend"></span>
+  </header>
+  <div id="add">
+    <input id="url" type="text" placeholder="Paste a Recap lecture or module link"
+           aria-label="Panopto lecture or module URL">
+    <input id="module" type="text" placeholder="Module name (optional)"
+           aria-label="Module name">
+    <label class="check"><input type="checkbox" id="fast">
+      Transcript only — fast, no slides</label>
+    <div class="row"><button id="btn-add" class="primary">Add</button></div>
+    <div class="hint" id="hint">A <b>Viewer.aspx?id=…</b> link adds one lecture.
+      A <b>List.aspx?folderID=…</b> link adds the whole module.</div>
+  </div>
+  <div id="tree"></div>
+</div>
+
+<div id="main">
+  <div id="bar">
+    <span class="title" id="title">Select a lecture</span>
+    <button id="btn-notes" class="primary" disabled>Write notes</button>
+    <button id="btn-verify" disabled>Verify</button>
+    <button id="btn-export" disabled title="Write into your Obsidian vault">
+      Send to Obsidian</button>
+  </div>
+  <div id="body">
+    <div id="left">
+      <video id="video" controls preload="metadata"></video>
+      <div id="rail"></div>
+      <div id="transcript"><div class="empty">Pick a lecture from the left.</div></div>
+    </div>
+    <div id="right">
+      <div id="tabs"></div>
+      <div id="notes"><div class="empty">No notes yet.</div></div>
+      <div id="verify" style="display:none"></div>
+    </div>
+  </div>
+  <div id="log"></div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const api = (p) => fetch(p).then(r => r.json());
+let lecture = null, activeNotes = null, segEls = [], slideEls = [];
+
+const fmt = s => {
+  s = Math.max(0, Math.floor(s));
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), x = s % 60;
+  return h ? `${h}:${String(m).padStart(2,'0')}:${String(x).padStart(2,'0')}`
+           : `${m}:${String(x).padStart(2,'0')}`;
+};
+const parseTs = t => {
+  const p = t.split(':').map(Number);
+  return p.length === 3 ? p[0]*3600 + p[1]*60 + p[2] : p[0]*60 + p[1];
+};
+const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+
+// ---------------------------------------------------------------- library
+
+async function loadLibrary() {
+  const h = await api('/health');
+  $('#backend').textContent = h.backend === 'gemini-cli' ? 'gemini' : (h.model || '');
+
+  const { modules } = await api('/api/library');
+  const tree = $('#tree');
+  tree.innerHTML = '';
+  if (!modules.length) {
+    tree.innerHTML = '<div class="empty">Library is empty.<br>Run sync.</div>';
+    return;
+  }
+  for (const mod of modules) {
+    const head = document.createElement('div');
+    head.className = 'mod';
+    head.textContent = `${mod.name} · ${mod.lectures.length}`;
+    tree.appendChild(head);
+
+    for (const lec of mod.lectures) {
+      const el = document.createElement('div');
+      el.className = 'lec';
+      el.dataset.id = lec.id;
+      el.setAttribute('role', 'button');
+      el.tabIndex = 0;
+      el.setAttribute('aria-label', lec.title);
+      el.onkeydown = e => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); el.click(); }
+      };
+      const pills = [
+        lec.has_transcript ? '<span class="pill ok">T</span>' : '<span class="pill">T</span>',
+        lec.has_slides ? '<span class="pill ok">S</span>' : '<span class="pill">S</span>',
+        lec.notes.length ? `<span class="pill ok">${lec.notes.length}N</span>` : '<span class="pill">N</span>',
+      ].join('');
+      el.innerHTML = `<span class="t">${esc(lec.title)}</span>
+        <span class="m">${pills} ${fmt(lec.duration)}</span>`;
+      el.onclick = () => openLecture(lec.id);
+      tree.appendChild(el);
+    }
+  }
+}
+
+// ---------------------------------------------------------------- lecture
+
+async function openLecture(id) {
+  lecture = await api('/api/lecture?id=' + encodeURIComponent(id));
+  document.querySelectorAll('.lec').forEach(e => e.classList.toggle('on', e.dataset.id === id));
+
+  $('#title').textContent = lecture.title;
+  const hasNotes = Object.keys(lecture.notes).length > 0;
+  $('#btn-notes').disabled = false;
+  $('#btn-verify').disabled = !hasNotes;
+  $('#btn-export').disabled = !hasNotes;
+
+  // Transcript-only lectures have no video: hide the player and offer to fill
+  // in the recording and slides.
+  const vid = $('#video');
+  const old = document.querySelector('.novideo');
+  if (old) old.remove();
+  if (lecture.video) {
+    vid.style.display = '';
+    vid.src = lecture.video;
+  } else {
+    vid.removeAttribute('src');
+    vid.load();
+    vid.style.display = 'none';
+    const bar = document.createElement('div');
+    bar.className = 'novideo';
+
+    if (lecture.pruned) {
+      // The video was processed then deleted to save space. Slides and
+      // transcript are intact, so re-downloading 148MB would be pointless —
+      // send them to Panopto instead.
+      bar.innerHTML = `<span>Recording pruned to save space — slides and
+        transcript are intact.</span>
+        <a href="${lecture.source || sourceUrl()}" target="_blank"
+           rel="noopener"><button>Watch on Panopto</button></a>`;
+    } else {
+      bar.innerHTML = `<span>Transcript only — no video or slides for this
+        lecture.</span><button id="btn-full">Get video &amp; slides</button>`;
+    }
+    $('#left').prepend(bar);
+
+    const full = bar.querySelector('#btn-full');
+    if (full) full.onclick = async () => {
+      const job = await runJob(
+        { url: sourceUrl(), module: lecture.module, analyse: false, slides: true },
+        full, 'Downloading…', 'Get video & slides');
+      if (job && job.state === 'done') {
+        await openLecture(lecture.id);
+        await loadLibrary();
+      }
+    };
+  }
+
+  renderRail();
+  renderTranscript();
+  renderTabs();
+  $('#verify').style.display = 'none';
+}
+
+function renderRail() {
+  const rail = $('#rail');
+  rail.innerHTML = '';
+  slideEls = lecture.slides.map(s => {
+    const img = document.createElement('img');
+    img.src = s.url;
+    img.title = fmt(s.time) + (s.text?.length ? ' — ' + s.text[0] : '');
+    img.onclick = () => seek(s.time);
+    rail.appendChild(img);
+    return img;
+  });
+}
+
+// Interleave slide markers into the transcript, same as bundle.md does —
+// so you can see what was on screen when a line was said.
+function renderTranscript() {
+  const box = $('#transcript');
+  box.innerHTML = '';
+  segEls = [];
+
+  const events = [
+    ...lecture.slides.map((s, i) => ({ kind: 'slide', t: s.time, s, i })),
+    ...lecture.segments.map(g => ({ kind: 'seg', t: g.start, g })),
+  ].sort((a, b) => a.t - b.t);
+
+  for (const ev of events) {
+    if (ev.kind === 'slide') {
+      const m = document.createElement('div');
+      m.className = 'slidemark';
+      const head = ev.s.text?.length ? ev.s.text[0] : 'slide';
+      m.textContent = `▸ ${fmt(ev.t)} — ${head}`;
+      m.onclick = () => seek(ev.t);
+      box.appendChild(m);
+    } else {
+      const d = document.createElement('div');
+      d.className = 'seg';
+      d.innerHTML = `<span class="ts">${fmt(ev.t)}</span><span>${esc(ev.g.text)}</span>`;
+      d.onclick = () => seek(ev.t);
+      box.appendChild(d);
+      segEls.push({ el: d, start: ev.t });
+    }
+  }
+}
+
+function seek(t) {
+  const v = $('#video');
+  if (!v.src) return;
+  v.currentTime = t;
+  v.play().catch(() => {});
+}
+
+// scrollIntoView({behavior:'smooth'}) silently gives up on the ~14000px jumps a
+// two-hour transcript produces, so drive the container's scroll directly.
+// Big jumps go instantly; only small ones animate.
+function centreIn(box, el, horizontal) {
+  // A collapsed container (hidden pane, zero-size viewport) makes centring
+  // meaningless and would fling the scroll somewhere arbitrary.
+  if (box.clientHeight < 80 || (horizontal && box.clientWidth < 80)) return;
+  const b = box.getBoundingClientRect(), e = el.getBoundingClientRect();
+  if (horizontal) {
+    const target = box.scrollLeft + (e.left - b.left) - (box.clientWidth - e.width) / 2;
+    box.scrollTo({ left: Math.max(0, target), behavior: 'smooth' });
+    return;
+  }
+  const target = box.scrollTop + (e.top - b.top) - (box.clientHeight - e.height) / 2;
+  const jump = Math.abs(target - box.scrollTop);
+  box.scrollTo({ top: Math.max(0, target), behavior: jump > 1500 ? 'auto' : 'smooth' });
+}
+
+// Follow playback: highlight the current line and slide, and keep them in view.
+let lastSeg = -1;
+$('#video').addEventListener('timeupdate', () => {
+  const t = $('#video').currentTime;
+  let idx = -1;
+  for (let i = 0; i < segEls.length; i++) {
+    if (segEls[i].start <= t) idx = i; else break;
+  }
+  if (idx !== lastSeg) {
+    if (segEls[lastSeg]) segEls[lastSeg].el.classList.remove('on');
+    if (segEls[idx]) {
+      segEls[idx].el.classList.add('on');
+      centreIn($('#transcript'), segEls[idx].el, false);
+    }
+    lastSeg = idx;
+  }
+  if (lecture) {
+    let si = -1;
+    for (let i = 0; i < lecture.slides.length; i++) {
+      if (lecture.slides[i].time <= t) si = i; else break;
+    }
+    slideEls.forEach((im, i) => im.classList.toggle('on', i === si));
+    if (slideEls[si]) centreIn($('#rail'), slideEls[si], true);
+  }
+});
+
+// ---------------------------------------------------------------- notes
+
+function renderTabs() {
+  const tabs = $('#tabs');
+  tabs.innerHTML = '';
+  const names = Object.keys(lecture.notes);
+  if (!names.length) {
+    $('#notes').innerHTML = '<div class="empty">No notes yet — hit <b>Write notes</b>.</div>';
+    activeNotes = null;
+    return;
+  }
+  activeNotes = names.includes(activeNotes) ? activeNotes : names[0];
+  for (const n of names) {
+    const t = document.createElement('div');
+    t.className = 'tab' + (n === activeNotes ? ' on' : '');
+    t.textContent = n.replace(/^notes-?/, '').replace(/\.md$/, '') || 'notes';
+    t.onclick = () => { activeNotes = n; renderTabs(); };
+    tabs.appendChild(t);
+  }
+  renderNotes(lecture.notes[activeNotes]);
+}
+
+// Small markdown renderer. Timestamps become clickable so every claim in the
+// notes jumps to the moment it came from — the whole point of the thing.
+function renderNotes(md) {
+  const inline = s => esc(s)
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/(?<!\*)\*([^*]+)\*(?!\*)/g, '<em>$1</em>')
+    .replace(/\b(\d{1,2}:[0-5]\d(?::[0-5]\d)?)\b/g, '<span class="cite" data-t="$1">$1</span>');
+
+  const out = [];
+  let list = false;
+  for (const raw of md.split('\n')) {
+    const line = raw.trimEnd();
+    const h = line.match(/^(#{1,4})\s+(.*)$/);
+    const li = line.match(/^\s*[-*]\s+(.*)$/) || line.match(/^\s*\d+\.\s+(.*)$/);
+    const bq = line.match(/^>\s?(.*)$/);
+    if (li) {
+      if (!list) { out.push('<ul>'); list = true; }
+      out.push(`<li>${inline(li[1])}</li>`); continue;
+    }
+    if (list) { out.push('</ul>'); list = false; }
+    if (h) out.push(`<h${h[1].length}>${inline(h[2])}</h${h[1].length}>`);
+    else if (bq) out.push(`<blockquote>${inline(bq[1])}</blockquote>`);
+    else if (line.trim()) out.push(`<p>${inline(line)}</p>`);
+  }
+  if (list) out.push('</ul>');
+
+  const box = $('#notes');
+  box.innerHTML = out.join('');
+  box.querySelectorAll('.cite').forEach(c =>
+    c.onclick = () => seek(parseTs(c.dataset.t)));
+}
+
+// ---------------------------------------------------------------- actions
+
+$('#btn-verify').onclick = async () => {
+  if (!lecture || !activeNotes) return;
+  const r = await api(`/api/verify?id=${lecture.id}&notes=${encodeURIComponent(activeNotes)}`);
+  const box = $('#verify');
+  box.style.display = 'block';
+  if (r.error) { box.innerHTML = `<span class="bad">${esc(r.error)}</span>`; return; }
+
+  const bad = r.unsupported.length, oor = r.out_of_range.length;
+  box.innerHTML = `
+    <div class="row">
+      <span>figures <b>${r.checked}</b></span>
+      <span class="${bad ? 'bad' : 'good'}">unsupported <b>${bad}</b></span>
+      <span>citations <b>${r.timestamps}</b></span>
+      <span class="${oor ? 'bad' : 'good'}">out of range <b>${oor}</b></span>
+      <span class="dim">${r.notes}</span>
+    </div>
+    ${bad ? '<div class="dim" style="margin-top:6px">' +
+      r.unsupported.slice(0, 6).map(u =>
+        `<div><b class="bad">${esc(u.value)}</b> — ${esc(u.context)}</div>`).join('') +
+      (bad > 6 ? `<div>… and ${bad - 6} more</div>` : '') + '</div>' : ''}
+    ${r.clean ? '<div class="good" style="margin-top:6px">Every figure and citation traces back to the source.</div>' : ''}`;
+};
+
+// Shared runner: POST a job, stream its log into the console, resolve on finish.
+async function runJob(body, btn, busyLabel, idleLabel) {
+  const log = $('#log');
+  log.style.display = 'block';
+  log.textContent = '';
+  const restore = () => { btn.disabled = false; btn.textContent = idleLabel; };
+  btn.disabled = true; btn.textContent = busyLabel;
+
+  const started = await fetch('/jobs', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }).then(r => r.json()).catch(e => ({ error: e.message }));
+
+  if (started.error) { log.textContent = 'error: ' + started.error; restore(); return null; }
+
+  // Ask only for log lines we haven't seen; re-fetching the whole log every
+  // 1.5s makes a long folder run quadratically expensive.
+  let shown = 0;
+  return new Promise(resolve => {
+    const tick = async () => {
+      const job = await api(`/jobs/${started.id}?since=${shown}`);
+      for (const line of job.log) log.textContent += line + '\n';
+      shown = job.log_total ?? shown + job.log.length;
+      log.scrollTop = log.scrollHeight;
+      if (job.state === 'done' || job.state === 'error') {
+        restore();
+        resolve(job);
+        return;
+      }
+      setTimeout(tick, 1500);
+    };
+    tick();
+  });
+}
+
+$('#btn-add').onclick = async () => {
+  const url = $('#url').value.trim();
+  const hint = $('#hint');
+  if (!url) { hint.className = 'hint err'; hint.textContent = 'Paste a link first.'; return; }
+  hint.className = 'hint';
+
+  const fast = $('#fast').checked;
+  hint.textContent = fast
+    ? 'Fetching captions — this should only take seconds.'
+    : 'Downloading — this takes a few minutes per lecture.';
+
+  const job = await runJob(
+    { url, module: $('#module').value.trim(), analyse: false, slides: true,
+      captions_only: fast },
+    $('#btn-add'), 'Adding…', 'Add');
+
+  if (!job) { hint.className = 'hint err'; hint.textContent = 'Failed — see the log.'; return; }
+  if (job.state === 'error') {
+    hint.className = 'hint err';
+    hint.textContent = job.error || 'Failed — see the log.';
+    return;
+  }
+  $('#url').value = '';
+  hint.textContent = `Added ${job.lectures.length} lecture(s).`;
+  await loadLibrary();
+  if (job.lectures.length) await openLecture(job.lectures[0]);
+};
+
+$('#url').addEventListener('keydown', e => {
+  if (e.key === 'Enter') $('#btn-add').click();
+});
+
+$('#btn-export').onclick = async () => {
+  if (!lecture || !activeNotes) return;
+  const btn = $('#btn-export');
+  btn.disabled = true; btn.textContent = 'Exporting…';
+  const box = $('#verify');
+  box.style.display = 'block';
+
+  const r = await api(`/api/export?id=${lecture.id}` +
+    `&notes=${encodeURIComponent(activeNotes)}&transcript=1`);
+
+  btn.disabled = false; btn.textContent = 'Send to Obsidian';
+  box.innerHTML = r.error
+    ? `<span class="bad">${esc(r.error)}</span>`
+    : `<div class="good">Written to your vault — <b>${esc(r.note)}</b>
+       (${r.slides} slides${r.transcript ? ', plus transcript' : ''}).</div>`;
+};
+
+$('#btn-notes').onclick = async () => {
+  if (!lecture) return;
+  const job = await runJob(
+    { url: sourceUrl(), module: lecture.module, analyse: true, slides: true },
+    $('#btn-notes'), 'Working…', 'Write notes');
+  if (job && job.state === 'done') {
+    await openLecture(lecture.id);
+    await loadLibrary();
+  }
+};
+
+// The daemon keys jobs by Panopto URL; rebuild it from the lecture id.
+function sourceUrl() {
+  return `https://recapexeter.cloud.panopto.eu/Panopto/Pages/Viewer.aspx?id=${lecture.id}`;
+}
+
+loadLibrary();
+</script>
+</body>
+</html>

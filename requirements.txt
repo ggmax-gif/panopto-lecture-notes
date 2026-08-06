@@ -1,0 +1,3 @@
+pyyaml          # config
+openai          # `analyse` — speaks to local servers and Gemini alike
+mlx-whisper     # local transcription fallback, Apple Silicon only

@@ -1,0 +1,16 @@
+# Lecture recordings, transcripts, slide images and generated notes.
+# This is the university's teaching material — it stays on your machine.
+library/
+
+# Local settings: your vault path, your Recap folder ids.
+# Copy config.yaml.example to config.yaml and fill it in.
+config.yaml
+
+# Built artefacts — regenerate with ./build_app.py
+*.app/
+*.icns
+icon.iconset/
+
+__pycache__/
+*.pyc
+.DS_Store

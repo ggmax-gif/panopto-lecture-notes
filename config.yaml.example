@@ -1,0 +1,111 @@
+# Which browser yt-dlp borrows Panopto session cookies from.
+# chrome | brave | firefox | safari | edge | chromium | vivaldi
+# Use "chrome:Profile 1" to pick a specific profile.
+browser: chrome
+
+# Folders and one-off lectures to sync.
+# Folder URLs look like:
+#   https://recapexeter.cloud.panopto.eu/Panopto/Pages/Sessions/List.aspx?folderID=<uuid>
+# Single lectures look like:
+#   https://recapexeter.cloud.panopto.eu/Panopto/Pages/Viewer.aspx?id=<uuid>
+# Leave `name` off a folder and each lecture files itself by the module code in
+# its own title — a Recap folder is usually a mixed archive, not one module.
+sources:
+  # - url: "https://recapexeter.cloud.panopto.eu/Panopto/Pages/Sessions/List.aspx#folderID=%22<your-folder-uuid>%22"
+
+# How many of the newest recordings `autosync` checks per source each run. The
+# folder above holds 131; new ones land at the top, so there's no point walking
+# the lot every week.
+autosync_check: 20
+
+# Panopto offers three kinds of stream:
+#   DV       camera + slides tiled into quadrants, with audio (~470 MB / 2 hours)
+#   OBJECT   the slides alone, full frame, no audio           (~160 MB / 2 hours)
+#   PODCAST  Panopto's own merged download
+# OBJECT is the one worth having: in DV the slide is squashed into a quarter of
+# the frame, which reads badly to a vision model.
+# Slides come from the screen capture and the transcript comes from Panopto's
+# captions, so by default we only download OBJECT — a tenth of the size.
+video_format: "bv*[acodec=none]/b"
+
+# Only used when a recording has no captions and Whisper has to run: the
+# screen-only stream has no audio, so the smallest audio-bearing stream is
+# fetched separately.
+audio_format: "worst[acodec!=none]/ba/b"
+
+# Local transcription, used only when Panopto has no captions.
+whisper_model: "mlx-community/whisper-large-v3-turbo"
+
+# Slide detection. Higher threshold = fewer keyframes. If a lecture produces
+# more than max_slides, the threshold is raised automatically and retried.
+slide_threshold: 0.15
+max_slides: 60
+
+# Slide transitions cross-fade, which fires the scene detector several times per
+# change. Keyframes closer together than this (seconds) are collapsed to one.
+min_slide_gap: 2.0
+
+# Read each slide with Apple's Vision framework and inline the text into
+# bundle.md. This is what lets a text-only local model see equations and tables,
+# and it gives a much better duplicate test than timing alone.
+#   pip install pyobjc-framework-Vision
+ocr: true
+
+# Consecutive slides whose OCR text overlaps by at least this much are treated
+# as one animated build; the last (most complete) is kept.
+slide_text_similarity: 0.90
+
+# Delete the recording once slides and transcript are extracted: ~148 MB
+# becomes ~5 MB per lecture, so a term fits in a few hundred MB instead of
+# several GB. Nothing the notes rely on is lost — slides are images on disk,
+# the transcript is text, and every timestamp links back into Panopto for the
+# moments you want to hear. The viewer opens Panopto instead of playing
+# locally. Set true to keep recordings for offline playback.
+keep_video: false
+
+# How `analyse` gets its notes written.
+#
+#   backend: openai      any OpenAI-compatible endpoint (local Ollama, LM Studio,
+#                        vllm-mlx, or the metered Gemini API)
+#   backend: gemini-cli  shells out to Gemini CLI. NOTE: as of Aug 2026 Google
+#                        has withdrawn Code Assist for individuals from this
+#                        client, so it can no longer spend an AI Pro
+#                        subscription — it needs GEMINI_API_KEY and bills per
+#                        token, same as the API. To use the subscription, use
+#                        Antigravity against library/ instead (see AGENTS.md).
+#
+# Ollama is already running locally and needs no key, so it's the default.
+backend: "openai"
+
+# Seconds to wait for a completion. Large local models take far longer than the
+# client's 600s default on a two-hour lecture — leave this generous.
+request_timeout: 3600
+
+# The model's context window, and how much of it to leave free for the reply.
+# Bundles larger than the remainder are trimmed before sending — a slide-heavy
+# lecture can produce 33k tokens, and Ollama doesn't reject an overlong request,
+# it just stalls forever on a socket that never closes. Match this to the
+# context your model actually serves (`ollama ps` shows it).
+max_context_tokens: 32768
+reserve_output_tokens: 3000
+endpoint: "http://localhost:11434/v1"
+model: "gemma4:12b-mlx"
+
+# Other combinations, swap in as needed:
+#   NOT qwen3.6:27b-mlx on this machine — 22 GB of weights plus a 32k KV cache
+#   overcommits 32 GB of RAM and it thrashes: measured 0.3 tok/s generation
+#   against gemma4:12b's 25.5, i.e. ~3 hours for one lecture instead of minutes.
+#   LM Studio               endpoint: "http://localhost:1234/v1"
+#   Subscription Gemini     backend: "gemini-cli"   model: "gemini-3-pro"
+#                           (endpoint is ignored for gemini-cli)
+#   Metered Gemini API      endpoint: "https://generativelanguage.googleapis.com/v1beta/openai/"
+#                           model: "gemini-2.5-pro"  + export GEMINI_API_KEY
+
+# Port the `serve` daemon listens on (loopback only). If you change this, change
+# PORT in extension/background.js to match.
+port: 8420
+
+# Where `export` writes notes. Lectures land in <vault>/<folder>/<Module>/, with
+# slide images in <vault>/<folder>/attachments/ under vault-unique names.
+obsidian_vault: ""   # e.g. "/Users/you/Documents/My Vault"
+obsidian_folder: "Lectures"
