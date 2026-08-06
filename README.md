@@ -1,20 +1,52 @@
 # lecturescrape
 
-Pulls Panopto (Exeter Recap / Moodle) lecture recordings down locally and turns
-each one into a **bundle**: a timestamped transcript with slide keyframes
-interleaved at the points they appear. That's the format to hand to Gemini or a
-local model — far cheaper and more accurate than feeding it raw video.
+Turns a Panopto lecture recording into notes covering **what the lecturer said
+that the slides don't**.
+
+You already have the slides. Summarising them back to you is worthless — the
+reason attending mattered is everything said out loud that never made it onto a
+slide: why a rule exists, which parts are examinable, where a slide is wrong,
+what someone asked and how it was answered.
+
+So the notes are a *delta*, not a summary. Each lecture becomes a timestamped
+transcript with its slide text read by OCR and interleaved at the moment each
+slide appeared, and a model is asked for the difference between the two. A
+typical note surfaces things like:
+
+> **Beyond the slides** — accelerated depreciation exists as a government lever
+> to encourage capital investment `15:26`
+>
+> **Emphasis** — "you don't need to memorise the decision rule", follow the
+> payment-timing logic instead `18:57`
+>
+> **Corrections** — the units on the exercise slide should be dollars, not
+> pounds `30:38`
+
+Every timestamp deep-links back into the recording, so any claim is one click
+from hearing it said. Notes are checked for invented figures and misquotes
+before you trust them.
+
+Everything except the optional hosted-model step runs locally.
+
+## How it works
 
 ```
-library/
-  Cell Biology/
-    Lecture 4 - Enzyme Kinetics [dc340e97…]/
-      video.mp4
-      transcript.md      plain timestamped text
-      transcript.json    machine-readable segments
-      slides/            slide_0001.jpg …
-      bundle.md          transcript + slide images, interleaved  ← feed this in
-      notes.md           written by `analyse`
+Recap link  →  fetch  →  captions  →  slide keyframes  →  delta notes  →  Obsidian
+                 │          │              │                   │             │
+          picks the      Panopto's     deduplicated       what the       timestamps
+          full-frame     own, or        by OCR text,      recording      deep-link
+          slide stream   Whisper        not pixels        adds           to Panopto
+```
+
+A processed lecture is about 3 MB — the recording is deleted once its slides and
+transcript are extracted, since the notes don't need it and Panopto still does.
+
+```
+library/BEE2041/2026-03-19 L1 Data Science for Economics [aaf677bd…]/
+  transcript.md     timestamped text
+  slides/           slide_0001.jpg …
+  bundle.md         transcript + slide text, interleaved  ← what the model reads
+  notes.md          the delta
 ```
 
 ## Setup
@@ -33,6 +65,38 @@ images are the university's teaching material and stay on your machine.
 
 `mlx-whisper` is only needed when a recording has no captions. `openai` is only
 needed for `analyse` — it talks to local servers as happily as to hosted ones.
+
+You also need to be logged into Recap in the browser named in `config.yaml`;
+that session is what authorises the download.
+
+## Quick start
+
+```bash
+./lecturescrape.py sync --url "<paste a Recap lecture or folder link>"
+./lecturescrape.py process          # transcript, slides, OCR
+./lecturescrape.py analyse --all    # write the notes
+./lecturescrape.py verify "L1"      # check figures and quotes
+./lecturescrape.py export --all     # send to Obsidian
+```
+
+Or skip the terminal: `./lecturescrape.py serve` opens a viewer at
+<http://127.0.0.1:8420> with a paste box, a synced transcript, and buttons for
+all of the above. `./build_app.py --desktop` wraps it as a Mac app.
+
+Add `--captions-only` to `sync` to grab just the transcripts — seconds per
+lecture instead of minutes, and enough to search a whole term. Fetch the video
+later for the lectures you actually want slides from.
+
+## Scope
+
+This downloads recordings you already have access to, for your own study. It
+authenticates as you, using your own browser session — it does not bypass access
+control, and it can't reach anything your account can't.
+
+Recordings, transcripts and slide images stay on your machine: `library/` is
+gitignored, and lectures are pruned to text and keyframes once processed. The
+material belongs to the university that made it. Keeping a local copy to revise
+from is ordinary use; republishing it isn't.
 
 ## The app
 
