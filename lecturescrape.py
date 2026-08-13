@@ -743,8 +743,23 @@ def extract_slides(cfg: Config, d: Path, video: Path | None) -> list[dict]:
 
     # One decode pass only. A 2-hour lecture takes minutes to scan, so thinning
     # an over-eager result is far cheaper than re-running at a higher threshold.
+    #
+    # The scene filter scores each frame against the one before it, so at full
+    # rate it is asked whether 1/25th of a second changed anything — which for a
+    # slide that cross-fades over half a second is 25 changes too small to clear
+    # the threshold, and the slide is missed outright. Thinning to a couple of
+    # frames a second puts the whole transition between one comparison and the
+    # next. Measured on a 1080p reconstruction of a real lecture: 4.33s at full
+    # rate against 1.40s at 2 fps, finding the same slides on hard cuts — and on
+    # a version cross-fading over 0.4s, one of three transitions rather than the
+    # none full rate manages.
+    #
+    # (Hardware decode is the obvious next thought and it is a trap: -hwaccel
+    # videotoolbox measured 10.47s on the same file, since every frame has to
+    # come back off the GPU for the filter anyway.)
+    prefilter = f"fps={cfg.scene_scan_fps:g}," if cfg.scene_scan_fps else ""
     vf = (
-        rf"select='eq(n\,0)+gt(scene\,{cfg.slide_threshold})',"
+        rf"{prefilter}select='eq(n\,0)+gt(scene\,{cfg.slide_threshold})',"
         r"scale='min(1280,iw)':-2,showinfo"
     )
     proc = run(
@@ -1201,30 +1216,60 @@ def analyse_batch(cfg: Config, args) -> None:
               f"{out_name}. Use --redo to rewrite them.")
         return
 
+    where = {"antigravity": "via agy" + (", reading the slides" if cfg.vision else ""),
+             "gemini-cli": "via the gemini CLI"}.get(cfg.backend,
+                                                    f"at {cfg.endpoint}")
     print(f"{len(todo)} of {len(dirs)} lecture(s) need notes "
-          f"({cfg.model} at {cfg.endpoint})\n")
+          f"({cfg.model} {where})\n")
+
+    def write_one(d: Path) -> str:
+        if args.prompt:
+            prompt = Path(args.prompt).read_text()
+        elif args.style == "summary":
+            prompt = SUMMARY_PROMPT
+        elif args.style == "delta":
+            prompt = DELTA_PROMPT
+        else:
+            prompt = choose_prompt(d, use_slides=True)
+
+        run_analysis(cfg, d, use_slides=args.slides or prompt is DELTA_PROMPT,
+                     prompt=prompt, out_name=out_name)
+        return "delta" if prompt is DELTA_PROMPT else "summary"
 
     done, failed = 0, []
-    for i, d in enumerate(todo, 1):
-        print(f"[{i}/{len(todo)}] {display_title(d)[:58]}")
-        try:
-            if args.prompt:
-                prompt = Path(args.prompt).read_text()
-            elif args.style == "summary":
-                prompt = SUMMARY_PROMPT
-            elif args.style == "delta":
-                prompt = DELTA_PROMPT
-            else:
-                prompt = choose_prompt(d, use_slides=True)
 
-            run_analysis(cfg, d, use_slides=args.slides or prompt is DELTA_PROMPT,
-                         prompt=prompt, out_name=out_name)
-            style = "delta" if prompt is DELTA_PROMPT else "summary"
-            print(f"      written ({style})")
-            done += 1
-        except Exception as e:
-            failed.append(display_title(d)[:50])
-            print(f"      ! failed: {str(e)[:90]}")
+    if args.jobs > 1:
+        # Lectures don't depend on each other and the whole job is spent
+        # waiting on someone else's model, so a term's worth can be in flight
+        # at once. Threads, not processes: the wait is inside a subprocess or a
+        # socket, both of which drop the GIL. Left at 1 by default because the
+        # local backend is one Ollama instance and handing it four lectures at
+        # once just makes all four slow.
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        print(f"  {args.jobs} at a time\n")
+        with ThreadPoolExecutor(max_workers=args.jobs) as pool:
+            pending = {pool.submit(write_one, d): d for d in todo}
+            for i, fut in enumerate(as_completed(pending), 1):
+                d = pending[fut]
+                title = display_title(d)[:58]
+                try:
+                    style = fut.result()
+                    print(f"[{i}/{len(todo)}] {title}\n      written ({style})")
+                    done += 1
+                except Exception as e:
+                    failed.append(display_title(d)[:50])
+                    print(f"[{i}/{len(todo)}] {title}\n      ! failed: {str(e)[:90]}")
+    else:
+        for i, d in enumerate(todo, 1):
+            print(f"[{i}/{len(todo)}] {display_title(d)[:58]}")
+            try:
+                style = write_one(d)
+                print(f"      written ({style})")
+                done += 1
+            except Exception as e:
+                failed.append(display_title(d)[:50])
+                print(f"      ! failed: {str(e)[:90]}")
 
     print(f"\n{done} written, {len(failed)} failed")
     for f in failed:
@@ -2945,6 +2990,10 @@ def main() -> None:
     s.add_argument("--model", help="override the model in config.yaml")
     s.add_argument("--backend", choices=["openai", "gemini-cli", "antigravity"],
                    help="override the backend in config.yaml")
+    s.add_argument("--jobs", type=int, default=1, metavar="N",
+                   help="lectures to analyse at once on a batch run; worth "
+                        "raising for a hosted backend, leave at 1 for a local "
+                        "model")
     s.add_argument("--vision", action="store_true",
                    help="let the model read the slide images for the equations "
                         "and tables OCR mangles; needs the antigravity backend "

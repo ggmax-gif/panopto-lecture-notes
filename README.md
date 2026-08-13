@@ -435,7 +435,7 @@ Panopto captions are poor (they often are for technical vocabulary).
 Keyframes come from ffmpeg scene detection, so you get one image per slide
 change rather than one per second.
 
-Two things the raw detector gets wrong, both handled:
+Three things the raw detector gets wrong, all handled:
 
 - **Cross-fades.** A single slide change fires the detector three or four times
   as the transition plays. Keyframes closer together than `min_slide_gap`
@@ -444,6 +444,22 @@ Two things the raw detector gets wrong, both handled:
 - **Over-triggering.** If a lecture is mostly a talking head you can get
   hundreds of frames. `max_slides` (60) thins them evenly. It thins rather than
   re-runs, because a second detection pass over a 2-hour video costs minutes.
+- **Fades slow enough to vanish.** The detector scores each frame against the
+  one before it, so at a video's own 25 fps it's being asked whether 1/25th of a
+  second changed anything. A slide that cross-fades over half a second is 25
+  changes too small to clear the threshold, and is missed outright.
+  `scene_scan_fps` (2) thins the stream first, putting the whole transition
+  between one comparison and the next.
+
+That last one is also where the scan time went. Measured on a 1080p
+reconstruction of a real lecture: **4.33s at full rate against 1.40s at 2 fps**,
+finding the same slides on hard cuts — and on a version cross-fading over 0.4s,
+one transition of three rather than none at all. Set `scene_scan_fps: 0` to score
+every frame as it used to.
+
+Hardware decoding is the obvious next idea and it's a trap: `-hwaccel
+videotoolbox` measured **10.47s** on the same file, 2.4x *slower*, because every
+frame has to be copied back off the GPU for the filter anyway.
 
 Tune `slide_threshold` if you want more or fewer.
 
@@ -463,8 +479,10 @@ the pipeline, for two reasons:
   far apart they are; on a real lecture it merged 36 keyframes down to 30 after
   the timing pass had already run.
 
-Vision needs no model download and runs on the GPU — about 5 seconds for a
-two-hour lecture's slides. It's a separate stage from frame extraction, so
+Vision needs no model download and runs on the GPU — measured at 3.96s for one
+lecture's 29 slides. Don't bother threading that loop: it already serialises on
+the GPU, and a `ThreadPoolExecutor` over the same slides came back 3% faster,
+which is noise. It's a separate stage from frame extraction, so
 enabling it on already-downloaded lectures doesn't re-decode the video:
 
 ```bash
@@ -495,6 +513,18 @@ images resolve as relative paths alongside the text.
 
 Batch runs skip lectures that already have notes and keep going past a failure,
 so a term can be left to process unattended. `--redo` rewrites existing notes.
+
+A batch is almost entirely spent waiting on someone else's model, and lectures
+don't depend on each other, so `--jobs N` puts several in flight at once. On four
+BEE2041 lectures through `agy`: **2m51s at `--jobs 1`, 50s at `--jobs 4`.**
+
+```bash
+./lecturescrape.py analyse --module BEE2041 --backend antigravity --jobs 4
+```
+
+It stays at 1 unless you ask, because the local backend is a single Ollama
+instance — handing it four lectures at once just makes all four slow. Raise it
+for a hosted backend.
 
 ### What the notes contain
 

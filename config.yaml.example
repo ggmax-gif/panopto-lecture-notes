@@ -41,6 +41,14 @@ whisper_model: "mlx-community/whisper-large-v3-turbo"
 slide_threshold: 0.15
 max_slides: 60
 
+# Frames per second fed to the scene detector. It scores each frame against the
+# one before it, so at a video's own 25 fps it is being asked whether 1/25th of a
+# second changed anything — and a slide that cross-fades over half a second is
+# 25 changes too small to notice, so it goes missing. Two a second puts the whole
+# transition between one comparison and the next, and scans a 1080p lecture about
+# 3x faster into the bargain. Set 0 to score every frame, as this used to.
+scene_scan_fps: 2
+
 # Slide transitions cross-fade, which fires the scene detector several times per
 # change. Keyframes closer together than this (seconds) are collapsed to one.
 min_slide_gap: 2.0
