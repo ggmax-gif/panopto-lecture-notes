@@ -1880,6 +1880,15 @@ def write_concept_note(base: Path, entry: dict) -> None:
 TIMESTAMP_RE = re.compile(r"\b(\d{1,2}):([0-5]\d)(?::([0-5]\d))?\b")
 NUMBER_RE = re.compile(r"\d[\d,]*(?:\.\d+)?")
 
+# Straight and curly quotations, kept as separate alternatives on purpose.
+# Models differ on typography and one writing curly quotes had every quotation
+# skipped by the straight-only pattern — reported as "0 quotes checked", which
+# reads like a clean bill of health rather than an unread one. Folding “ and ”
+# together into " is not the fix: it makes open and close indistinguishable, so
+# the pattern pairs one quotation's closing mark with the next one's opening
+# mark and "checks" the prose in between.
+QUOTE_RE = re.compile(r'"([^"\n]{12,140})"|“([^”\n]{12,140})”')
+
 
 def normalise_number(tok: str) -> str:
     tok = tok.replace(",", "")
@@ -1951,7 +1960,8 @@ def verify_notes(d: Path, notes_name: str = "notes.md") -> dict:
     spoken_norm = " ".join(spoken_norm.split())
 
     bad_quotes, quotes_checked = [], 0
-    for q in re.findall(r'"([^"\n]{12,140})"', notes):
+    for m in QUOTE_RE.finditer(notes):
+        q = m.group(1) or m.group(2)
         norm = " ".join(re.sub(r"[^a-z0-9 ]+", " ", q.lower()).split())
         if not norm:
             continue
