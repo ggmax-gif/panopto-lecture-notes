@@ -591,14 +591,32 @@ correct".
 ```yaml
 backend: "openai"
 endpoint: "http://localhost:11434/v1"
-model: "gemma4:12b-mlx"
+model: "nemotron-3.5-lightning:30b-mlx"
 ```
 
-**12B is the practical ceiling on a 32 GB Mac.** `qwen3.6:27b-mlx` is 22 GB of
-weights, and once a 32k KV cache is added it overcommits memory and thrashes —
-measured at 0.3 tok/s generation and 5 tok/s prefill, against 25.5 and 67 for
-`gemma4:12b-mlx`. That's roughly three hours for one lecture rather than a few
-minutes. Use the subscription backend instead when you want more than 12B.
+**Which local model.** One BEF2014 lecture, ~23k-token bundle, same prompt, all
+on the same 32 GB Mac. "Wrong" is quotes that don't appear in the transcript,
+per `verify`:
+
+| model | on disk | wall | prefill | gen | notes | quotes / wrong |
+|---|---|---|---|---|---|---|
+| `gemma4:12b-mlx` | 7.7 GB | 448s | 116 t/s | 20.3 t/s | 9.4 KB | 12 / 2 |
+| `gemma4:26b-mlx` | 17 GB | **207s** | 318 t/s | 27.0 t/s | 4.9 KB | 9 / 0 |
+| `nemotron-3.5-lightning:30b-mlx` | 22 GB | 597s | **880 t/s** | 36.1 t/s | **15.7 KB** | **44** / 2 |
+| `muse-glimmer:30b-mlx` | 21 GB | 1614s | 202 t/s | 10.2 t/s | 12.0 KB | 30 / **0** |
+
+Nemotron is the default because delta notes live on quotation, and it quotes the
+lecturer nearly four times as often as 12B at a lower error rate. Its 597s
+understates it: 18.7k generated tokens produced 15.7 KB of notes, so most of that
+time is reasoning it never emits. It's a 30B mixture-of-experts with 3B active,
+which is how 22 GB of weights still generates at 36 t/s. Take `gemma4:26b-mlx`
+when you want a term done fast and can live with notes half the length.
+
+**Size does not decide this.** `qwen3.6:27b-mlx` at 19 GB overcommits a 32 GB
+machine once a 32k KV cache lands on top, and thrashes at 0.3 tok/s — three hours
+for one lecture. Nemotron is 3 GB larger and perfectly happy. Architecture and
+KV-cache shape matter more than the number on the download, so measure a
+candidate before trusting it; `--label` exists for exactly that.
 
 Ollama sizes its context window automatically, so a two-hour transcript
 (~18k tokens) goes in whole — verified by asking a model to quote the last line

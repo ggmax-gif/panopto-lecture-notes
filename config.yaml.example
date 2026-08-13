@@ -118,13 +118,24 @@ reserve_output_tokens: 3000
 endpoint: "http://localhost:11434/v1"
 model: "gemma4:12b-mlx"
 
+# 12B is a safe default rather than the best one — it's what fits everywhere.
+# On a 32 GB Mac, measured on one lecture with the same prompt:
+#
+#   model                     wall   prefill    gen   notes   quotes/wrong
+#   gemma4:12b-mlx            448s   116 t/s   20.3   9.4 KB     12 / 2
+#   gemma4:26b-mlx            207s   318 t/s   27.0   4.9 KB      9 / 0
+#   nemotron-3.5-lightning    597s   880 t/s   36.1  15.7 KB     44 / 2
+#   muse-glimmer:30b-mlx     1614s   202 t/s   10.2  12.0 KB     30 / 0
+#
 # Other combinations, swap in as needed:
-#   NOT qwen3.6:27b-mlx on this machine — 22 GB of weights plus a 32k KV cache
-#   overcommits 32 GB of RAM and it thrashes: measured 0.3 tok/s generation
-#   against gemma4:12b's 25.5, i.e. ~3 hours for one lecture instead of minutes.
+#   NOT qwen3.6:27b-mlx on 32 GB — 19 GB of weights plus a 32k KV cache
+#   overcommits and it thrashes: measured 0.3 tok/s generation, i.e. ~3 hours
+#   for one lecture instead of minutes. Size alone doesn't decide it — the
+#   30B mixture-of-experts above is bigger and fine — so measure, don't guess.
 #   LM Studio               endpoint: "http://localhost:1234/v1"
-#   Subscription Gemini     backend: "gemini-cli"   model: "gemini-3-pro"
-#                           (endpoint is ignored for gemini-cli)
+#   Subscription Gemini     backend: "antigravity"  model: "gemini-3.1-pro-high"
+#   Metered Gemini CLI      backend: "gemini-cli"   model: "gemini-3-pro"
+#                           (endpoint is ignored by both)
 #   Metered Gemini API      endpoint: "https://generativelanguage.googleapis.com/v1beta/openai/"
 #                           model: "gemini-2.5-pro"  + export GEMINI_API_KEY
 
