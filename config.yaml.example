@@ -71,11 +71,30 @@ keep_video: false
 #                        has withdrawn Code Assist for individuals from this
 #                        client, so it can no longer spend an AI Pro
 #                        subscription — it needs GEMINI_API_KEY and bills per
-#                        token, same as the API. To use the subscription, use
-#                        Antigravity against library/ instead (see AGENTS.md).
+#                        token, same as the API.
+#   backend: antigravity shells out to Antigravity's CLI (`agy -p`), which does
+#                        still spend the subscription. Needs `agy` on PATH and
+#                        signed in, and a model from `agy models` rather than a
+#                        local tag. endpoint and max_context_tokens are ignored.
 #
 # Ollama is already running locally and needs no key, so it's the default.
 backend: "openai"
+
+# antigravity only: let the model open the slide JPEGs instead of reading only
+# the text OCR pulled off them. OCR is what flattens an equation or a table into
+# nonsense, so this is worth it on the maths-heavy modules and pointless on the
+# ones whose slides are prose. It costs a few tool round trips per lecture, and
+# forces bundle.md as the source since transcript.md names no slides.
+# `--vision` turns it on for one run.
+#
+# It also works on the openai backend with a local model that can see —
+# muse-glimmer:30b-mlx reads the slides here, gemma4 and nemotron can't, and
+# `ollama show <model>` says which. That path sends the images itself rather
+# than letting an agent open them, so it costs context: vision_slides is how
+# many go, densest-in-figures first, charged at ~1200 tokens each against
+# max_context_tokens and taken out of the transcript's share.
+vision: false
+vision_slides: 6
 
 # Seconds to wait for a completion. Large local models take far longer than the
 # client's 600s default on a two-hour lecture — leave this generous.

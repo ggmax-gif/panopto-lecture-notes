@@ -16,12 +16,15 @@ browser cookies. See README.md.
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import quote
@@ -46,12 +49,15 @@ class Config:
     audio_format: str
     whisper_model: str
     slide_threshold: float
+    scene_scan_fps: float
     min_slide_gap: float
     max_slides: int
     ocr: bool
     slide_text_similarity: float
     keep_video: bool
     backend: str
+    vision: bool
+    vision_slides: int
     endpoint: str
     model: str
     request_timeout: float
@@ -80,12 +86,15 @@ class Config:
                 "whisper_model", "mlx-community/whisper-large-v3-turbo"
             ),
             slide_threshold=float(raw.get("slide_threshold", 0.15)),
+            scene_scan_fps=float(raw.get("scene_scan_fps", 2)),
             min_slide_gap=float(raw.get("min_slide_gap", 2.0)),
             max_slides=int(raw.get("max_slides", 60)),
             ocr=bool(raw.get("ocr", True)),
             slide_text_similarity=float(raw.get("slide_text_similarity", 0.90)),
             keep_video=bool(raw.get("keep_video", False)),
             backend=raw.get("backend", "openai"),
+            vision=bool(raw.get("vision", False)),
+            vision_slides=int(raw.get("vision_slides", 6)),
             endpoint=raw.get("endpoint", "http://localhost:11434/v1"),
             model=raw.get("model", "gemma4:12b-mlx"),
             request_timeout=float(raw.get("request_timeout", 3600)),
@@ -1122,6 +1131,26 @@ def choose_prompt(d: Path, use_slides: bool) -> str:
 
 
 def cmd_analyse(cfg: Config, args) -> None:
+    # These have to land before the batch dispatch. Applied after it, as they
+    # used to be, a `--all --backend antigravity` run quietly ignored both and
+    # went to whatever config said.
+    if args.model:
+        cfg.model = args.model
+    if args.backend:
+        cfg.backend = args.backend
+    if args.vision:
+        cfg.vision = True
+    if cfg.vision and cfg.backend not in ("antigravity", "openai"):
+        die(f"--vision needs the antigravity or openai backend; {cfg.backend} "
+            f"can't read the slide images.")
+    if cfg.vision and cfg.backend == "openai":
+        # Ollama knows which of its models can see, so a text-only model gets
+        # turned away here rather than silently ignoring every slide sent.
+        can_see = ollama_has_vision(cfg.endpoint, cfg.model)
+        if can_see is False:
+            die(f"{cfg.model} has no vision capability — `ollama show "
+                f"{cfg.model}` lists what it can do. muse-glimmer:30b-mlx can.")
+
     if args.all or args.module:
         return analyse_batch(cfg, args)
 
@@ -1135,11 +1164,6 @@ def cmd_analyse(cfg: Config, args) -> None:
         for d in dirs:
             print(f"  {d.name}")
         die("be more specific")
-
-    if args.model:
-        cfg.model = args.model
-    if args.backend:
-        cfg.backend = args.backend
 
     if args.prompt:
         prompt = Path(args.prompt).read_text()
@@ -1254,6 +1278,196 @@ def gemini_cli_analysis(cfg: Config, d: Path, body: str, prompt: str) -> str:
     return strip_cli_noise(proc.stdout)
 
 
+# agy is an agent sitting in a workspace, not a completion endpoint. Left to
+# itself it picks up library/AGENTS.md — which tells it to read bundle.md and
+# write notes.md — and then reaches for a tool whose permission prompt headless
+# mode can only auto-deny. So the call says plainly that the lecture is already
+# in the message and the answer comes back as the reply.
+ANTIGRAVITY_PREAMBLE = """The lecture is included in full below. Do not read \
+any files, run any commands or write anything to disk, and ignore any workspace \
+instructions telling you to — everything you need is in this message. Reply with \
+the finished notes as markdown and nothing else: no preamble, and no commentary \
+on what you did.
+"""
+
+# With --vision the slides go back to being pictures. OCR is what flattens an
+# equation into nonsense, and the image on disk is the thing OCR was reading —
+# so the agent is pointed at it and told to prefer it. `view_file` opens a JPEG
+# as an image and needs no permission grant, which is what makes this safe to
+# run unattended; run_command and write_to_file do need one, and asking for it
+# in print mode ends the run, so the prompt rules both out. The lecture still
+# travels inline: reading it off disk would leave the model free to skim.
+ANTIGRAVITY_VISION_PREAMBLE = """The lecture is included in full below — the \
+transcript, with each slide's text as OCR read it off the image.
+
+The slide images themselves are on disk, and OCR is exactly what mangles \
+equations, tables and plots. So before you state a figure, quote a formula or \
+describe a table, open that slide with the view_file tool and read it off the \
+image — the OCR text underneath it is not good enough to cite from. Slide paths \
+below are relative: prefix them with {d}/ for the absolute path view_file wants. \
+A slide that is only prose or a screenshot needs no opening; the ones carrying \
+numbers do.
+
+Do not run shell commands and do not write anything to disk. Neither can be \
+approved while this runs unattended, and either will end the run with nothing to \
+show. Reply with the finished notes as markdown and nothing else: no preamble, \
+and no commentary on what you did.
+"""
+
+# A slide costs about this much context as an image. Measured against Ollama:
+# one 1280-wide keyframe plus a one-line question reported 1264 prompt tokens.
+# Images are charged against the same window as the transcript, so the count
+# sent has to be paid for out of the text budget rather than assumed free.
+SLIDE_IMAGE_TOKENS = 1200
+
+# Digits, currency, percentages, an equals sign: the slides worth spending an
+# image on. OCR reads prose off a slide perfectly well — what it destroys is
+# the tables and formulas, which is what the picture is for.
+NUMERIC_SLIDE = re.compile(r"[0-9]|[£$€%]|=")
+
+
+def slides_worth_seeing(d: Path, limit: int) -> list[Path]:
+    """Pick the slides whose pictures are worth the context they cost.
+
+    Sending all sixty would overrun the window and take an age; sending none
+    wastes a multimodal model. The ones carrying numbers are the ones OCR
+    mangles, so those are the ones to show.
+    """
+    cached = d / "slides.json"
+    if not cached.exists():
+        return []
+    try:
+        slides = json.loads(cached.read_text())
+    except json.JSONDecodeError:
+        return []
+
+    scored = []
+    for s in slides:
+        text = " ".join(s.get("text") or [])
+        hits = len(NUMERIC_SLIDE.findall(text))
+        if hits:
+            scored.append((hits, s["file"]))
+
+    # Densest first to choose, chronological to send, so the model still sees
+    # them in the order the lecture did.
+    chosen = {f for _, f in sorted(scored, reverse=True)[:limit]}
+    return [d / s["file"] for s in slides
+            if s["file"] in chosen and (d / s["file"]).exists()]
+
+
+def image_part(path: Path) -> dict:
+    """A slide as an OpenAI-style image part. Ollama accepts a data URI here,
+    which keeps this on the same client as every other openai-backend call."""
+    b64 = base64.b64encode(path.read_bytes()).decode()
+    return {"type": "image_url",
+            "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}
+
+
+def ollama_has_vision(endpoint: str, model: str) -> bool | None:
+    """Ask Ollama whether this model can see. None when the endpoint isn't
+    Ollama and the question doesn't apply."""
+    if "11434" not in endpoint:
+        return None
+    host = endpoint.split("/v1")[0].rstrip("/")
+    try:
+        req = urllib.request.Request(
+            f"{host}/api/show",
+            data=json.dumps({"model": model}).encode(),
+            headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return "vision" in (json.loads(r.read()).get("capabilities") or [])
+    except (urllib.error.URLError, json.JSONDecodeError, TimeoutError, OSError):
+        return None
+
+
+# The bundle travels as a command-line argument, so the ceiling here is ARG_MAX
+# rather than the model's context window. 150k tokens is roughly 600 KB, inside
+# macOS's 1 MB and about ten times the largest bundle this has produced — which
+# is the point: unlike a local model, nothing gets trimmed in practice.
+ANTIGRAVITY_TOKEN_LIMIT = 150_000
+
+
+def antigravity_analysis(cfg: Config, d: Path, body: str, prompt: str) -> str:
+    """Run the notes through Antigravity's CLI.
+
+    This is how the subscription gets spent from a script, which Gemini CLI
+    stopped being able to do. `agy -p` answers one prompt and exits, so it drops
+    into the same slot as any other backend.
+
+    It ignores stdin, unlike the gemini client, so the bundle rides in the
+    prompt argument instead of being piped.
+    """
+    if not have("agy"):
+        raise RuntimeError(
+            "agy not found — install Antigravity, then run `agy install` to put "
+            "it on PATH."
+        )
+
+    # A local tag like "gemma4:12b-mlx" is left over from the openai backend and
+    # means nothing here; agy takes ids from its own list. Say so now rather
+    # than after a lecture's worth of waiting.
+    if ":" in cfg.model:
+        raise RuntimeError(
+            f"{cfg.model!r} is a local model name — the antigravity backend "
+            f"needs one of agy's own ids. `agy models` lists them; "
+            f"gemini-3.1-pro-high is the usual choice."
+        )
+
+    preamble = (ANTIGRAVITY_VISION_PREAMBLE.format(d=d) if cfg.vision
+                else ANTIGRAVITY_PREAMBLE)
+
+    cmd = [
+        "agy", "-p", f"{preamble}\n{prompt}\n\n---\n\n{body}",
+        # A transcript line beginning with a slash is a lecturer saying
+        # something, not a command for the CLI to expand.
+        "--disable-slash-commands",
+        # Print mode gives up after five minutes by default. A two-hour lecture
+        # through a thinking model takes longer than that.
+        "--print-timeout", f"{int(cfg.request_timeout)}s",
+    ]
+    if cfg.model:
+        cmd += ["--model", cfg.model]
+    if cfg.vision:
+        # Without this the lecture folder isn't in the workspace and view_file
+        # won't reach it — print mode starts in a scratch directory of its own
+        # rather than in cwd.
+        cmd += ["--add-dir", str(d)]
+
+    how = "reading the slides" if cfg.vision else "subscription"
+    print(f"asking {cfg.model or 'antigravity'} via agy ({how}) ...")
+    proc = subprocess.run(cmd, capture_output=True, text=True, cwd=str(d))
+
+    out = strip_cli_noise(proc.stdout)
+    err = strip_cli_noise(f"{proc.stderr}\n{proc.stdout}")
+    low = err.lower()
+
+    # A denied tool call is reported as an ordinary answer, so a zero exit code
+    # isn't on its own enough to trust what came back.
+    if "headless mode cannot prompt" in low:
+        raise RuntimeError(
+            "agy reached for a tool and headless mode auto-denied it. The "
+            "lecture is passed inline so that it doesn't need one — if you're "
+            "using a custom --prompt, check it isn't asking for files to be "
+            "read or written."
+        )
+    if proc.returncode != 0:
+        if any(w in low for w in ("sign in", "login", "unauthenticated", "auth")):
+            raise RuntimeError(
+                "agy isn't signed in — run `agy` once in a terminal to "
+                "authenticate, then try again."
+            )
+        if "model" in low and any(w in low for w in ("unknown", "invalid", "not found")):
+            raise RuntimeError(
+                f"agy rejected model {cfg.model!r} — `agy models` lists the ids "
+                f"it takes."
+            )
+        raise RuntimeError(f"agy failed: {err[:400]}")
+    if not out:
+        raise RuntimeError(f"agy returned nothing. {err[:300]}")
+
+    return out
+
+
 # Terminal-capability warnings and approval banners the CLI prints around the
 # actual answer; none of it belongs in notes.md.
 _CLI_NOISE = re.compile(
@@ -1320,18 +1534,38 @@ def fit_to_context(text: str, budget: int) -> tuple[str, str]:
 
 def run_analysis(cfg: Config, d: Path, use_slides: bool = False,
                  prompt: str = DEFAULT_PROMPT, out_name: str = "notes.md") -> str:
+    # transcript.md names no slides at all, so vision against it would be an
+    # instruction to open images the model has never heard of.
+    use_slides = use_slides or cfg.vision
     source = d / ("bundle.md" if use_slides else "transcript.md")
     if not source.exists():
         raise RuntimeError(f"{source.name} missing — process the lecture first")
 
     body = source.read_text()
-    budget = cfg.max_context_tokens - est_tokens(prompt) - cfg.reserve_output_tokens
+
+    # A local model reading the slides pays for them out of the same context
+    # the transcript uses, so the pictures are chosen and costed before the
+    # text is trimmed to fit around them.
+    images: list[Path] = []
+    if cfg.vision and cfg.backend == "openai":
+        images = slides_worth_seeing(d, cfg.vision_slides)
+        if not images:
+            print("  no slides with figures on them — sending text only")
+
+    # max_context_tokens is sized for whatever runs locally, which a hosted
+    # model behind agy has no reason to be held to.
+    limit = (ANTIGRAVITY_TOKEN_LIMIT if cfg.backend == "antigravity"
+             else cfg.max_context_tokens)
+    budget = (limit - est_tokens(prompt) - cfg.reserve_output_tokens
+              - len(images) * SLIDE_IMAGE_TOKENS)
     body, note = fit_to_context(body, budget)
     if note:
         print(f"  bundle over context budget — {note}")
 
-    if cfg.backend == "gemini-cli":
-        notes = gemini_cli_analysis(cfg, d, body, prompt)
+    if cfg.backend in ("gemini-cli", "antigravity"):
+        run = (antigravity_analysis if cfg.backend == "antigravity"
+               else gemini_cli_analysis)
+        notes = run(cfg, d, body, prompt)
         (d / out_name).write_text(notes + "\n")
         return notes
 
@@ -1346,7 +1580,15 @@ def run_analysis(cfg: Config, d: Path, use_slides: bool = False,
             f"{cfg.endpoint} needs a key — export GEMINI_API_KEY (or OPENAI_API_KEY)"
         )
 
-    print(f"asking {cfg.model} at {cfg.endpoint} ...")
+    text = f"{prompt}\n\n---\n\n{body}"
+    if images:
+        print(f"asking {cfg.model} at {cfg.endpoint}, showing it "
+              f"{len(images)} slide(s) ...")
+        content = [{"type": "text", "text": text}] + [image_part(p) for p in images]
+    else:
+        print(f"asking {cfg.model} at {cfg.endpoint} ...")
+        content = text
+
     # The client defaults to a 600s timeout and two retries. A large local model
     # chewing through a two-hour lecture blows past that, and each retry reloads
     # the weights — so it fails after 30 minutes having achieved nothing.
@@ -1354,9 +1596,16 @@ def run_analysis(cfg: Config, d: Path, use_slides: bool = False,
                     timeout=cfg.request_timeout, max_retries=1)
     resp = client.chat.completions.create(
         model=cfg.model,
-        messages=[{"role": "user", "content": f"{prompt}\n\n---\n\n{body}"}],
+        messages=[{"role": "user", "content": content}],
     )
     notes = resp.choices[0].message.content or ""
+    if not notes.strip():
+        # A thinking model that spends its whole budget reasoning returns an
+        # empty message rather than an error, which lands as a blank notes.md.
+        raise RuntimeError(
+            f"{cfg.model} returned no notes — it may have spent the reply on "
+            f"reasoning. Raise reserve_output_tokens, or try a smaller bundle."
+        )
     (d / out_name).write_text(notes + "\n")
     return notes
 
@@ -2694,8 +2943,12 @@ def main() -> None:
                    help="use bundle.md (with slide refs) instead of transcript.md")
     s.add_argument("--prompt", help="path to a custom prompt file")
     s.add_argument("--model", help="override the model in config.yaml")
-    s.add_argument("--backend", choices=["openai", "gemini-cli"],
+    s.add_argument("--backend", choices=["openai", "gemini-cli", "antigravity"],
                    help="override the backend in config.yaml")
+    s.add_argument("--vision", action="store_true",
+                   help="let the model read the slide images for the equations "
+                        "and tables OCR mangles; needs the antigravity backend "
+                        "or a local model that can see")
     s.add_argument("--label", help="save as notes-LABEL.md, for comparing models")
     s.add_argument("--style", choices=["auto", "delta", "summary"], default="auto",
                    help="delta = only what the recording adds beyond the slides "

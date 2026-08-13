@@ -582,8 +582,36 @@ per token through a separate account. Either set `GEMINI_API_KEY` and point the
 Both bill per token. As of August 2026 Google withdrew Gemini Code Assist for
 individuals from third-party clients, so the CLI can no longer spend an AI Pro
 subscription — it reports *"This client is no longer supported for Gemini Code
-Assist for individuals"* and points you at Antigravity. There is no supported
-way to drive subscription quota from a script.
+Assist for individuals"* and points you at Antigravity. Which, as it turns out,
+is scriptable.
+
+**Gemini, on the subscription.** Antigravity ships a CLI, `agy`, and its print
+mode answers one prompt and exits — so it drops straight into the backend slot
+the Gemini CLI vacated:
+
+```yaml
+backend: "antigravity"
+model: "gemini-3.1-pro-high"
+```
+
+`agy models` lists the ids it takes, which include Claude Opus 4.6 and Sonnet 4.6
+alongside the Gemini line. It has to be on PATH and signed in — run `agy` once in
+a terminal — and it wants one of those ids rather than a local tag like
+`gemma4:12b-mlx`, which the backend checks for up front rather than failing a
+lecture later.
+
+Two details differ from the other backends and are worth knowing if you edit the
+prompts. `agy` ignores stdin, so the bundle is passed as a command-line argument;
+that puts the ceiling at `ARG_MAX` rather than a context window, which at ~600 KB
+is about ten times the largest bundle here, so `max_context_tokens` is ignored
+and nothing gets trimmed. And it's an agent in a workspace rather than a
+completion endpoint: any tool it reaches for in print mode is auto-denied,
+because there's nobody there to approve it. The prompt therefore tells it the
+lecture is already inline and that the answer comes back as the reply — a custom
+`--prompt` asking it to read or write files will fail on that.
+
+Measured at 45 seconds for a two-hour lecture on `gemini-3.6-flash-low`, most of
+which is startup.
 
 **Comparing backends.** `--model`, `--backend` and `--label` override the config
 for one run, so you can put two models side by side on the same lecture without
@@ -591,30 +619,79 @@ overwriting the result:
 
 ```bash
 ./lecturescrape.py analyse "BEF2014" --slides --model "gemma4:e4b-mlx" --label "e4b"
-./lecturescrape.py analyse "BEF2014" --slides --backend gemini-cli --model "gemini-3-pro" --label "gemini"
+./lecturescrape.py analyse "BEF2014" --slides --backend antigravity --model "gemini-3.1-pro-high" --label "pro"
 ```
 
-That writes `notes-e4b.md` and `notes-gemini.md` alongside each other. Worth
-doing once on a lecture you know well, to see whether a paid model is worth it
-over the local default for routine lectures.
+That writes `notes-e4b.md` and `notes-pro.md` alongside each other. Worth doing
+once on a lecture you know well, to see whether the subscription model is worth
+the wait over the local default for routine lectures.
 
-To compare against Antigravity, just ask it to write `notes-antigravity.md`
-instead of `notes.md` and the three sit side by side.
+**Reading the slides, not just their text.** OCR is what flattens an equation
+into nonsense, and the image it was reading is sitting right there on disk. With
+`--vision`, or `vision: true` in config, the antigravity backend points the model
+at the slide folder and tells it to open a slide before citing any figure,
+formula or table:
 
-**Antigravity — the only way to spend the subscription.** It has no local API to
-point a script at, so it can't be a backend. It works the other way round: open
-`library/` as the workspace and let its agent do the writing.
+```bash
+./lecturescrape.py analyse "BEF2014" --slides --backend antigravity --vision
+```
 
-`process` drops an `AGENTS.md` there describing the folder layout and the
-note-writing task, so the agent knows what to do without being briefed each
-time — *"write notes for the BEF2014 lecture"* is enough. It reads `bundle.md`
-and the slide images off disk and writes `notes.md` back, exactly where the CLI
-would have put them.
+On the accounting lecture it opened four slides out of thirty-odd — the ones
+with the numbers on — and left the prose slides alone. On a workflow lecture
+whose slides are screenshots it opened none, correctly. Reckon on a few extra
+tool round trips: 50 seconds against 45 on the same lecture.
 
-This is manual per lecture rather than automated, which is the trade for not
-paying per token. The whole pipeline up to that point — download, transcribe,
-OCR, bundle — still runs unattended via `sync` and `process`, or the Chrome
-extension button.
+It reads only. `view_file` needs no permission grant, which is what makes this
+safe to leave running; `run_command` and `write_to_file` do, and a permission
+prompt in print mode ends the run, so the prompt rules both out and the notes
+still come back over stdout for `analyse` to write. Nothing gets approved on your
+behalf — `--dangerously-skip-permissions` is not involved. `--vision` forces
+`bundle.md` as the source, since `transcript.md` names no slides for it to open.
+
+**The same thing locally.** `--vision` also works on the `openai` backend, given
+a local model that can see:
+
+```bash
+./lecturescrape.py analyse "BEF2014" --slides --vision --model "muse-glimmer:30b-mlx"
+```
+
+`ollama show` reports which models have the capability, and a model that doesn't
+is turned away up front rather than silently ignoring every image sent.
+
+The mechanics differ from the agent route in a way worth knowing. There, the
+model opens slides itself and pays nothing from your context. Here `analyse`
+picks the slides and sends them, so they're charged against the same window as
+the transcript — about 1200 tokens each, measured. `vision_slides` (6) caps how
+many go, chosen by which carry the most figures, and their cost comes out of the
+text budget before the bundle is trimmed to fit around them.
+
+The selection agrees with the agent's own judgement: on the accounting lecture it
+picks slides 13, 15, 20, 21, 32 and 40, four of which are exactly the ones
+Antigravity chose to open unprompted.
+
+Worth it for the maths-heavy modules specifically. Asked to reproduce the DDB
+depreciation table on slide 13 — which OCR flattens into a single jumbled column
+— `muse-glimmer:30b-mlx` returned both tables with every cell in the right
+column, and read the title as `Solution – Tax Reporting (£)` where OCR had `(f)`.
+
+End to end on that lecture it took 18m51s, against 26m54s for the same model on
+text alone: the images displace text from the window, so there's less to prefill.
+`verify` found 50 quotations, none of them absent from the transcript — the
+cleanest of any model tried here.
+
+Don't expect more *figures* in the notes, though. The delta prompt tells the
+model you already have the slides and not to restate them, so it doesn't recite
+the table it just read. What the pictures buy is being right about a number when
+it does cite one, not citing more of them.
+
+**Antigravity in the IDE.** Still there, still occasionally the better tool —
+it's interactive, so you can argue with it about a slide. Open `library/` as the
+workspace and ask; `process` drops an `AGENTS.md` there describing the folder
+layout and the note-writing task, so *"write notes for the BEF2014 lecture"* is
+enough. Ask for `notes-antigravity.md` and it sits beside the rest.
+
+That route is manual per lecture. The backend isn't — `analyse --all --vision`
+walks a term unattended, which is the point of it.
 
 ## A note on the recordings
 
