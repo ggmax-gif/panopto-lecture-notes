@@ -618,9 +618,39 @@ for one lecture. Nemotron is 3 GB larger and perfectly happy. Architecture and
 KV-cache shape matter more than the number on the download, so measure a
 candidate before trusting it; `--label` exists for exactly that.
 
-Ollama sizes its context window automatically, so a two-hour transcript
-(~18k tokens) goes in whole — verified by asking a model to quote the last line
-of the transcript and getting the real one back.
+**The context window is 32,768 and you cannot raise it from here.** Ollama sizes
+it automatically and serves 32,768; `analyse` talks to it through
+`/v1/chat/completions`, and that compatibility layer silently drops `options`.
+Passing `num_ctx: 65536` through the client's `extra_body` returns a perfectly
+good answer and `ollama ps` still reports 32,768. The native `/api/generate`
+honours it, which is why a benchmark script can set the window and the real code
+path can't.
+
+That makes `max_context_tokens` a **trimming knob, not a window**. Raising it
+doesn't buy room; it pushes more text at a window that stays 32,768, and the
+overflow evicts the oldest tokens — the start of the transcript — with no error
+raised. A two-hour transcript (~18k tokens) still goes in whole. A slide-heavy
+bundle does not.
+
+This is why `est_tokens` is deliberately pessimistic. Four characters a token is
+a prose rule, and a bundle is timestamps, numbers and markdown: measured at 3.10
+chars/token for gemma4, 3.22 for nemotron and 3.61 for muse-glimmer. It now uses
+`//3`, which sits above every ratio measured, so `fit_to_context` trims while
+there is still room.
+
+The old `//4` let 117k characters through, and the ceiling that matters is lower
+than it looks, because the reply shares the window with the prompt. A full set of
+notes is ~4,900 tokens, so anything past **~89,800 characters** overruns once the
+model starts writing. The BEF2014 lecture sat just inside that at 90,075: sent
+whole it was 28,511 prefill plus ~4,886 emitted against a 32,768 window, over by
+629 tokens, with the oldest tokens — the start of the transcript — falling out
+silently. It is trimmed now, which is the point.
+
+There is real headroom being left unclaimed: nemotron held 32k, 49k and 65k
+windows at an unchanged 22 GB resident and ~42 tok/s. Reaching it means setting
+`OLLAMA_CONTEXT_LENGTH` server-side, baking `PARAMETER num_ctx` into a derived
+model, or giving the backend a native `/api/chat` path for local endpoints —
+none of which are done here.
 
 **Gemini, metered.** A Google AI Pro plan is *not* API access — the API bills
 per token through a separate account. Either set `GEMINI_API_KEY` and point the
