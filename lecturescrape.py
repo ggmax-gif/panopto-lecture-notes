@@ -1426,9 +1426,10 @@ def ollama_has_vision(endpoint: str, model: str) -> bool | None:
 
 
 # The bundle travels as a command-line argument, so the ceiling here is ARG_MAX
-# rather than the model's context window. 150k tokens is roughly 600 KB, inside
-# macOS's 1 MB and about ten times the largest bundle this has produced — which
-# is the point: unlike a local model, nothing gets trimmed in practice.
+# rather than the model's context window. 150k tokens is roughly 450 KB by the
+# estimate above, inside macOS's 1 MB and still about five times the largest
+# bundle this has produced — which is the point: unlike a local model, nothing
+# gets trimmed in practice.
 ANTIGRAVITY_TOKEN_LIMIT = 150_000
 
 
@@ -1528,7 +1529,22 @@ def strip_cli_noise(text: str) -> str:
 
 
 def est_tokens(text: str) -> int:
-    return len(text) // 4
+    """Rough token count, deliberately pessimistic.
+
+    The usual four-characters-a-token rule is written for prose, and a bundle
+    is not prose: it is timestamps, numbers, currency and markdown, all of
+    which cost more. Measured on one 91,749-character bundle, the actual
+    prompt_eval_count was 29,581 tokens for gemma4, 28,511 for nemotron and
+    25,439 for muse-glimmer — 3.10, 3.22 and 3.61 characters a token, every
+    one of them under four.
+
+    At //4 the budget allowed 117k characters of bundle, which is about 36k
+    real tokens against a 32,768 window: the request overruns, and what falls
+    out is the oldest thing in the context, i.e. the start of the transcript.
+    Silently, since nothing errors. //3 sits above every ratio measured, so
+    the trimming fires while there is still room.
+    """
+    return len(text) // 3
 
 
 def fit_to_context(text: str, budget: int) -> tuple[str, str]:
