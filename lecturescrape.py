@@ -1528,6 +1528,22 @@ def strip_cli_noise(text: str) -> str:
     ).strip()
 
 
+def reasoning_of(msg) -> str:
+    """The reasoning channel, whatever this server decided to call it.
+
+    Ollama sends `reasoning`, others send `reasoning_content`, and the OpenAI
+    client parks unrecognised fields in model_extra rather than on the object.
+    """
+    extra = getattr(msg, "model_extra", None) or {}
+    for src in (msg, extra):
+        for name in ("reasoning", "reasoning_content"):
+            value = (src.get(name) if isinstance(src, dict)
+                     else getattr(src, name, None))
+            if value:
+                return str(value)
+    return ""
+
+
 def est_tokens(text: str) -> int:
     """Rough token count, deliberately pessimistic.
 
@@ -1659,13 +1675,22 @@ def run_analysis(cfg: Config, d: Path, use_slides: bool = False,
         model=cfg.model,
         messages=[{"role": "user", "content": content}],
     )
-    notes = resp.choices[0].message.content or ""
+    msg = resp.choices[0].message
+    notes = msg.content or ""
     if not notes.strip():
-        # A thinking model that spends its whole budget reasoning returns an
-        # empty message rather than an error, which lands as a blank notes.md.
+        notes = reasoning_of(msg)
+        if notes.strip():
+            # Not a failure worth losing the run over: the notes are written,
+            # they just came back on the wrong channel. Measured on nemotron
+            # against one lecture, three runs of four returned an empty message
+            # alongside 6-7 KB of "reasoning" that was the finished article —
+            # headings, timestamps, a Gaps section. The fourth returned it as
+            # content. Same model, same bundle, same prompt.
+            print("  model answered on the reasoning channel — using that")
+    if not notes.strip():
         raise RuntimeError(
-            f"{cfg.model} returned no notes — it may have spent the reply on "
-            f"reasoning. Raise reserve_output_tokens, or try a smaller bundle."
+            f"{cfg.model} returned neither notes nor reasoning. Try a smaller "
+            f"bundle, or a different model."
         )
     (d / out_name).write_text(notes + "\n")
     return notes
