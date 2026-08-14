@@ -605,6 +605,13 @@ per `verify`:
 | `nemotron-3.5-lightning:30b-mlx` | 22 GB | 597s | **880 t/s** | 36.1 t/s | **15.7 KB** | **44** / 2 |
 | `muse-glimmer:30b-mlx` | 21 GB | 1614s | 202 t/s | 10.2 t/s | 12.0 KB | 30 / **0** |
 
+**Nemotron answers on the wrong channel, often.** It returns an empty message
+with the finished notes in the reasoning field instead — measured at three runs
+of four on one lecture, the fourth returning identical work as content, same
+prompt and bundle. `analyse` falls back to the reasoning channel and says so on
+stdout; without that the run fails outright with the notes already written and
+discarded. Worth knowing if you point this model at anything else.
+
 Nemotron is the default because delta notes live on quotation, and it quotes the
 lecturer nearly four times as often as 12B at a lower error rate. Its 597s
 understates it: 18.7k generated tokens produced 15.7 KB of notes, so most of that
