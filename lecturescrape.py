@@ -1247,6 +1247,14 @@ def analyse_batch(cfg: Config, args) -> None:
         # once just makes all four slow.
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
+        local = cfg.backend == "openai" and (
+            "localhost" in cfg.endpoint or "127.0.0.1" in cfg.endpoint)
+        if local:
+            # Said rather than enforced: it's one model server either way, so
+            # concurrency buys nothing and costs memory, but a local endpoint
+            # can be fronting more than Ollama.
+            print(f"  note: {cfg.endpoint} is local, so {args.jobs} at a time "
+                  f"share one model server — this rarely beats --jobs 1")
         print(f"  {args.jobs} at a time\n")
         with ThreadPoolExecutor(max_workers=args.jobs) as pool:
             pending = {pool.submit(write_one, d): d for d in todo}
