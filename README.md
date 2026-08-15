@@ -461,6 +461,14 @@ Hardware decoding is the obvious next idea and it's a trap: `-hwaccel
 videotoolbox` measured **10.47s** on the same file, 2.4x *slower*, because every
 frame has to be copied back off the GPU for the filter anyway.
 
+Take the cross-fade half of that on its merits, though: it is measured on
+synthetic fades, and there's no sign the existing library needed it. Checking
+every keyframe gap over five minutes against the transcript — on the theory that
+a missed slide would leave the lecturer audibly pointing at one — the largest
+gaps (15, 12, 8 and 63 minutes) contain no slide references at all. They look
+like genuine dwells. The speedup is real either way; the recovered-slides benefit
+is unproven on real recordings.
+
 Tune `slide_threshold` if you want more or fewer.
 
 ### Slide OCR
