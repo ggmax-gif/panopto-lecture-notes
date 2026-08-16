@@ -2223,14 +2223,32 @@ def write_concept_note(base: Path, entry: dict) -> None:
 TIMESTAMP_RE = re.compile(r"\b(\d{1,2}):([0-5]\d)(?::([0-5]\d))?\b")
 NUMBER_RE = re.compile(r"\d[\d,]*(?:\.\d+)?")
 
-# Straight and curly quotations, kept as separate alternatives on purpose.
-# Models differ on typography and one writing curly quotes had every quotation
-# skipped by the straight-only pattern — reported as "0 quotes checked", which
-# reads like a clean bill of health rather than an unread one. Folding “ and ”
-# together into " is not the fix: it makes open and close indistinguishable, so
-# the pattern pairs one quotation's closing mark with the next one's opening
-# mark and "checks" the prose in between.
-QUOTE_RE = re.compile(r'"([^"\n]{12,140})"|“([^”\n]{12,140})”')
+# Curly quotations, where the direction of the mark says which end it is.
+CURLY_QUOTE_RE = re.compile(r'“([^”\n]{1,400})”')
+
+# Shortest and longest run of text worth checking against the transcript. Below
+# the floor is a quoted term rather than a claim about what was said.
+QUOTE_MIN, QUOTE_MAX = 12, 140
+
+
+def quotations(text: str) -> list[str]:
+    """The quoted runs in a note, paired the way a reader pairs them.
+
+    Pairing with a length-filtered regex goes wrong the moment a quotation
+    falls outside the filter: the skipped one's closing mark pairs with the
+    next one's opening mark, and the connective prose between two real
+    quotations gets checked as though it were one. A model that quotes short
+    terms constantly — qwen3.8 quotes 107 times in a lecture — trips that on
+    nearly every page, and the failures read like invented quotes.
+
+    So pair first and filter second. Curly marks carry their own direction;
+    straight ones are paired by position, every other field of a split.
+    """
+    found = [m.group(1) for m in CURLY_QUOTE_RE.finditer(text)]
+    straight = CURLY_QUOTE_RE.sub("", text)
+    found += [seg for i, seg in enumerate(straight.split('"'))
+              if i % 2 and "\n" not in seg]
+    return [q for q in found if QUOTE_MIN <= len(q) <= QUOTE_MAX]
 
 
 def normalise_number(tok: str) -> str:
@@ -2303,8 +2321,7 @@ def verify_notes(d: Path, notes_name: str = "notes.md") -> dict:
     spoken_norm = " ".join(spoken_norm.split())
 
     bad_quotes, quotes_checked = [], 0
-    for m in QUOTE_RE.finditer(notes):
-        q = m.group(1) or m.group(2)
+    for q in quotations(notes):
         norm = " ".join(re.sub(r"[^a-z0-9 ]+", " ", q.lower()).split())
         if not norm:
             continue
