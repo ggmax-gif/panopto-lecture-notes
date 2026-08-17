@@ -599,33 +599,44 @@ correct".
 ```yaml
 backend: "openai"
 endpoint: "http://localhost:11434/v1"
-model: "nemotron-3.5-lightning:30b-mlx"
+model: "qwen3.8:27b-mlx"
 ```
 
-**Which local model.** One BEF2014 lecture, ~23k-token bundle, same prompt, all
-on the same 32 GB Mac. "Wrong" is quotes that don't appear in the transcript,
-per `verify`:
+**Which local model.** One BEF2014 lecture, same prompt, all on the same 32 GB
+Mac. "Wrong" is quotes that don't appear in the transcript, per `verify`. The
+last two rows are the fair pair — identical trimmed 80k-char bundle; the rows
+above saw the untrimmed 90k one, before `est_tokens` was corrected:
 
 | model | on disk | wall | prefill | gen | notes | quotes / wrong |
 |---|---|---|---|---|---|---|
-| `gemma4:12b-mlx` | 7.7 GB | 448s | 116 t/s | 20.3 t/s | 9.4 KB | 12 / 2 |
+| `gemma4:12b-mlx` | 7.7 GB | 448s | 116 t/s | 20.3 t/s | 9.4 KB | 12 / 1 |
 | `gemma4:26b-mlx` | 17 GB | **207s** | 318 t/s | 27.0 t/s | 4.9 KB | 9 / 0 |
-| `nemotron-3.5-lightning:30b-mlx` | 22 GB | 597s | **880 t/s** | 36.1 t/s | **15.7 KB** | **44** / 2 |
 | `muse-glimmer:30b-mlx` | 21 GB | 1614s | 202 t/s | 10.2 t/s | 12.0 KB | 30 / **0** |
+| `nemotron` *(untrimmed)* | 22 GB | 597s | **880 t/s** | 36.1 t/s | 15.7 KB | 44 / 2 |
+| **`qwen3.8:27b-mlx`** | **18 GB** | **661s** | 182 t/s | 13.7 t/s | **22.4 KB** | **102** / 6 |
+| `nemotron-3.5-lightning` | 22 GB | 1467s | 486 t/s | 37.2 t/s | 11.8 KB | 52 / 8 |
 
-**Nemotron answers on the wrong channel, often.** It returns an empty message
-with the finished notes in the reasoning field instead — measured at three runs
-of four on one lecture, the fourth returning identical work as content, same
-prompt and bundle. `analyse` falls back to the reasoning channel and says so on
-stdout; without that the run fails outright with the notes already written and
-discarded. Worth knowing if you point this model at anything else.
+qwen3.8 is the default on that comparison: on the same input it is 2.2x faster
+than nemotron for 1.9x the notes, cites 47 figures with **none** unsupported
+against nemotron's 11, and quotes twice as often at a third the error rate. It
+also reads slide images, so `--vision` needs no second model — one model is the
+whole pipeline.
 
-Nemotron is the default because delta notes live on quotation, and it quotes the
-lecturer nearly four times as often as 12B at a lower error rate. Its 597s
-understates it: 18.7k generated tokens produced 15.7 KB of notes, so most of that
-time is reasoning it never emits. It's a 30B mixture-of-experts with 3B active,
-which is how 22 GB of weights still generates at 36 t/s. Take `gemma4:26b-mlx`
-when you want a term done fast and can live with notes half the length.
+Note which row has the *lowest* generation rate. Raw tok/s barely predicts
+anything here: what matters is how much of the generation is reasoning the model
+then discards. qwen3.8 spent 5 KB on thinking; nemotron burned 160 KB.
+
+**Nemotron's problem is variance**, which is why it isn't the default despite
+the fastest prefill here. The same lecture took 597s and 18.7k generated tokens
+one run, 1467s and 52k the next — a term of twelve could take two hours or five.
+It also intermittently returns an empty message with the finished notes in the
+reasoning field, three runs of four, the fourth returning identical work as
+content. `analyse` falls back to that channel and says so on stdout; without it
+the run fails outright with the notes already written and thrown away. Worth
+knowing if you point that model anywhere else.
+
+Take `gemma4:26b-mlx` when you want a term done fast and can live with notes a
+quarter the length.
 
 **Size does not decide this.** `qwen3.6:27b-mlx` at 19 GB overcommits a 32 GB
 machine once a 32k KV cache lands on top, and thrashes at 0.3 tok/s — three hours
@@ -741,15 +752,16 @@ still come back over stdout for `analyse` to write. Nothing gets approved on you
 behalf — `--dangerously-skip-permissions` is not involved. `--vision` forces
 `bundle.md` as the source, since `transcript.md` names no slides for it to open.
 
-**The same thing locally.** `--vision` also works on the `openai` backend, given
-a local model that can see:
+**The same thing locally, on the default model.** `--vision` also works on the
+`openai` backend, and `qwen3.8:27b-mlx` can see, so nothing else is needed:
 
 ```bash
-./lecturescrape.py analyse "BEF2014" --slides --vision --model "muse-glimmer:30b-mlx"
+./lecturescrape.py analyse "BEF2014" --slides --vision
 ```
 
 `ollama show` reports which models have the capability, and a model that doesn't
-is turned away up front rather than silently ignoring every image sent.
+is turned away up front rather than silently ignoring every image sent — the
+gemma4 line and nemotron are all text-only.
 
 The mechanics differ from the agent route in a way worth knowing. There, the
 model opens slides itself and pays nothing from your context. Here `analyse`
@@ -762,15 +774,17 @@ The selection agrees with the agent's own judgement: on the accounting lecture i
 picks slides 13, 15, 20, 21, 32 and 40, four of which are exactly the ones
 Antigravity chose to open unprompted.
 
-Worth it for the maths-heavy modules specifically. Asked to reproduce the DDB
-depreciation table on slide 13 — which OCR flattens into a single jumbled column
-— `muse-glimmer:30b-mlx` returned both tables with every cell in the right
-column, and read the title as `Solution – Tax Reporting (£)` where OCR had `(f)`.
+Worth it for the maths-heavy modules specifically. Slide 13 of that lecture is
+two depreciation tables, which OCR flattens into one jumbled column. Asked to
+reproduce them, `qwen3.8:27b-mlx` returned **all 15 cells correct** across both
+tables with the right column structure, in 51 seconds. `muse-glimmer:30b-mlx`
+matched it cell for cell and additionally read the title as `Solution – Tax
+Reporting (£)` where OCR had `(f)` — but takes 2.4x as long on a full lecture,
+which is why it's no longer worth keeping around for this.
 
-End to end on that lecture it took 18m51s, against 26m54s for the same model on
-text alone: the images displace text from the window, so there's less to prefill.
-`verify` found 50 quotations, none of them absent from the transcript — the
-cleanest of any model tried here.
+muse-glimmer end to end on that lecture took 18m51s, against 26m54s for the same
+model on text alone: the images displace text from the window, so there's less to
+prefill. `verify` found 50 quotations, none absent from the transcript.
 
 Don't expect more *figures* in the notes, though. The delta prompt tells the
 model you already have the slides and not to restate them, so it doesn't recite

@@ -124,8 +124,17 @@ model: "gemma4:12b-mlx"
 #   model                     wall   prefill    gen   notes   quotes/wrong
 #   gemma4:12b-mlx            448s   116 t/s   20.3   9.4 KB     12 / 2
 #   gemma4:26b-mlx            207s   318 t/s   27.0   4.9 KB      9 / 0
-#   nemotron-3.5-lightning    597s   880 t/s   36.1  15.7 KB     44 / 2
 #   muse-glimmer:30b-mlx     1614s   202 t/s   10.2  12.0 KB     30 / 0
+#   nemotron (untrimmed)      597s   880 t/s   36.1  15.7 KB     44 / 2
+#   ---- same trimmed input ----
+#   qwen3.8:27b-mlx           661s   182 t/s   13.7  22.4 KB    102 / 6
+#   nemotron-3.5-lightning   1467s   486 t/s   37.2  11.8 KB     52 / 8
+#
+# qwen3.8:27b-mlx is what this machine runs: on the same input it is 2.2x
+# faster than nemotron for 1.9x the notes, and it reads slide images too, so
+# `vision: true` needs no second model. Note the lowest raw generation rate
+# here still delivers the most notes — what matters is how much of the
+# generation is reasoning the model then throws away.
 #
 # Other combinations, swap in as needed:
 #   NOT qwen3.6:27b-mlx on 32 GB — 19 GB of weights plus a 32k KV cache
