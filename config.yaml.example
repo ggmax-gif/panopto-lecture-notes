@@ -95,9 +95,9 @@ backend: "openai"
 # forces bundle.md as the source since transcript.md names no slides.
 # `--vision` turns it on for one run.
 #
-# It also works on the openai backend with a local model that can see —
-# muse-glimmer:30b-mlx reads the slides here, gemma4 and nemotron can't, and
-# `ollama show <model>` says which. That path sends the images itself rather
+# It also works on the openai backend with a local model that can see, which
+# the default qwen3.8:27b-mlx is — so `--vision` needs no second model. The
+# gemma4 line and nemotron are text-only; `ollama show <model>` says which. That path sends the images itself rather
 # than letting an agent open them, so it costs context: vision_slides is how
 # many go, densest-in-figures first, charged at ~1200 tokens each against
 # max_context_tokens and taken out of the transcript's share.
@@ -108,11 +108,22 @@ vision_slides: 6
 # client's 600s default on a two-hour lecture — leave this generous.
 request_timeout: 3600
 
-# The model's context window, and how much of it to leave free for the reply.
+# Fallback context window, and how much of it to leave free for the reply.
 # Bundles larger than the remainder are trimmed before sending — a slide-heavy
 # lecture can produce 33k tokens, and Ollama doesn't reject an overlong request,
-# it just stalls forever on a socket that never closes. Match this to the
-# context your model actually serves (`ollama ps` shows it).
+# it just drops the oldest tokens, which is the start of the transcript.
+#
+# Against Ollama this number is only a fallback: analyse asks /api/ps what window
+# is actually being served and budgets against that, so the two can't drift. The
+# window is a server setting and can't be requested per call — the OpenAI
+# compatibility layer drops `options` — so to widen it:
+#
+#   launchctl setenv OLLAMA_CONTEXT_LENGTH 65536   # then restart Ollama
+#
+# Worth doing: on BEF2014, sending the bundle whole into 65,536 rather than
+# trimming it into 32,768 cited 93 figures against 47, at 2 unsupported against
+# 0, with better quote fidelity — for about five minutes more per lecture, and
+# 22 GB resident rather than 18.
 max_context_tokens: 32768
 reserve_output_tokens: 3000
 endpoint: "http://localhost:11434/v1"
@@ -122,7 +133,7 @@ model: "gemma4:12b-mlx"
 # On a 32 GB Mac, measured on one lecture with the same prompt:
 #
 #   model                     wall   prefill    gen   notes   quotes/wrong
-#   gemma4:12b-mlx            448s   116 t/s   20.3   9.4 KB     12 / 2
+#   gemma4:12b-mlx            448s   116 t/s   20.3   9.4 KB     12 / 1
 #   gemma4:26b-mlx            207s   318 t/s   27.0   4.9 KB      9 / 0
 #   muse-glimmer:30b-mlx     1614s   202 t/s   10.2  12.0 KB     30 / 0
 #   nemotron (untrimmed)      597s   880 t/s   36.1  15.7 KB     44 / 2

@@ -644,39 +644,50 @@ for one lecture. Nemotron is 3 GB larger and perfectly happy. Architecture and
 KV-cache shape matter more than the number on the download, so measure a
 candidate before trusting it; `--label` exists for exactly that.
 
-**The context window is 32,768 and you cannot raise it from here.** Ollama sizes
-it automatically and serves 32,768; `analyse` talks to it through
-`/v1/chat/completions`, and that compatibility layer silently drops `options`.
-Passing `num_ctx: 65536` through the client's `extra_body` returns a perfectly
-good answer and `ollama ps` still reports 32,768. The native `/api/generate`
+**The context window is a server setting, and `analyse` reads it rather than
+assuming it.** Ollama serves 32,768 by default, and you cannot ask for more per
+request: `/v1/chat/completions` silently drops `options`, so passing
+`num_ctx: 65536` through the client's `extra_body` returns a perfectly good
+answer while `ollama ps` still reports 32,768. Only the native `/api/generate`
 honours it, which is why a benchmark script can set the window and the real code
 path can't.
 
-That makes `max_context_tokens` a **trimming knob, not a window**. Raising it
-doesn't buy room; it pushes more text at a window that stays 32,768, and the
-overflow evicts the oldest tokens — the start of the transcript — with no error
-raised. A two-hour transcript (~18k tokens) still goes in whole. A slide-heavy
-bundle does not.
+What you can do is raise it on the server:
 
-This is why `est_tokens` is deliberately pessimistic. Four characters a token is
-a prose rule, and a bundle is timestamps, numbers and markdown: measured at 3.10
-chars/token for gemma4, 3.22 for nemotron and 3.61 for muse-glimmer. It now uses
-`//3`, which sits above every ratio measured, so `fit_to_context` trims while
-there is still room.
+```bash
+launchctl setenv OLLAMA_CONTEXT_LENGTH 65536   # then restart Ollama
+```
 
-The old `//4` let 117k characters through, and the ceiling that matters is lower
-than it looks, because the reply shares the window with the prompt. A full set of
-notes is ~4,900 tokens, so anything past **~89,800 characters** overruns once the
-model starts writing. The BEF2014 lecture sat just inside that at 90,075: sent
-whole it was 28,511 prefill plus ~4,886 emitted against a 32,768 window, over by
-629 tokens, with the oldest tokens — the start of the transcript — falling out
-silently. It is trimmed now, which is the point.
+`analyse` asks `/api/ps` what window is actually being served and budgets against
+that, falling back to `max_context_tokens` only for endpoints that aren't Ollama.
+So the two can't drift apart — a config that disagrees with the server would
+otherwise either trim slide text for no reason or overrun in silence.
 
-There is real headroom being left unclaimed: nemotron held 32k, 49k and 65k
-windows at an unchanged 22 GB resident and ~42 tok/s. Reaching it means setting
-`OLLAMA_CONTEXT_LENGTH` server-side, baking `PARAMETER num_ctx` into a derived
-model, or giving the backend a native `/api/chat` path for local endpoints —
-none of which are done here.
+**It's worth doing.** The same BEF2014 lecture, trimmed to fit 32,768 versus sent
+whole into 65,536:
+
+| | 32,768 | 65,536 |
+|---|---|---|
+| wall | 661s | 976s |
+| figures cited | 47 | **93** |
+| unsupported | 0 | 2 |
+| quotes / unverified | 102 / 6 | 103 / **3** |
+
+Twice the figures at a 2% error rate, and *better* quote fidelity, for about five
+minutes more per lecture. Memory holds: 22 GB resident with the larger cache.
+
+`est_tokens` is deliberately pessimistic for the same family of reasons. Four
+characters a token is a prose rule, and a bundle is timestamps, numbers and
+markdown: measured at 3.10 chars/token for gemma4, 3.22 for nemotron and 3.61 for
+muse-glimmer. It uses `//3`, above every ratio measured, so `fit_to_context` trims
+while there is still room.
+
+The ceiling that matters is lower than the budget suggests, because the reply
+shares the window with the prompt. A full set of notes is ~4,900 tokens, so at a
+32,768 window anything past **~89,800 characters** overruns once the model starts
+writing. BEF2014 sat just inside that at 90,075: sent whole it was 28,511 prefill
+plus ~4,886 emitted, over by 629 tokens, with the start of the transcript falling
+out silently.
 
 **Gemini, metered.** A Google AI Pro plan is *not* API access — the API bills
 per token through a separate account. Either set `GEMINI_API_KEY` and point the
