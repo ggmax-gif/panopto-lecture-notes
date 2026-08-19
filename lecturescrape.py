@@ -1416,12 +1416,55 @@ def image_part(path: Path) -> dict:
             "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}
 
 
+def ollama_host(endpoint: str) -> str | None:
+    """The Ollama API root behind an OpenAI-style endpoint, if it is local.
+
+    Not keyed on port 11434: a second server on another port is exactly how
+    you try a different OLLAMA_CONTEXT_LENGTH without disturbing the first.
+    """
+    if "localhost" not in endpoint and "127.0.0.1" not in endpoint:
+        return None
+    return endpoint.split("/v1")[0].rstrip("/")
+
+
+def ollama_window(endpoint: str, model: str) -> int | None:
+    """The context window Ollama is actually serving for this model.
+
+    Worth asking rather than assuming, because it is set on the server — by
+    OLLAMA_CONTEXT_LENGTH — and cannot be requested per call: the OpenAI
+    compatibility layer drops `options` on the floor. So max_context_tokens
+    cannot know it, and a config that disagrees with the server either trims
+    for no reason or overruns in silence.
+
+    The window is only reported once the model is loaded, hence the one-token
+    preflight. That load has to happen for the real request anyway.
+    """
+    host = ollama_host(endpoint)
+    if not host:
+        return None
+    try:
+        warm = urllib.request.Request(
+            f"{host}/api/generate",
+            data=json.dumps({"model": model, "prompt": "hi", "stream": False,
+                             "options": {"num_predict": 1}}).encode(),
+            headers={"Content-Type": "application/json"})
+        urllib.request.urlopen(warm, timeout=600).read()
+        with urllib.request.urlopen(f"{host}/api/ps", timeout=30) as r:
+            for m in json.loads(r.read()).get("models") or []:
+                if m.get("model") == model or m.get("name") == model:
+                    return int(m.get("context_length") or 0) or None
+    except (urllib.error.URLError, json.JSONDecodeError, TimeoutError,
+            OSError, ValueError):
+        return None
+    return None
+
+
 def ollama_has_vision(endpoint: str, model: str) -> bool | None:
     """Ask Ollama whether this model can see. None when the endpoint isn't
     Ollama and the question doesn't apply."""
-    if "11434" not in endpoint:
+    host = ollama_host(endpoint)
+    if not host:
         return None
-    host = endpoint.split("/v1")[0].rstrip("/")
     try:
         req = urllib.request.Request(
             f"{host}/api/show",
@@ -1639,8 +1682,13 @@ def run_analysis(cfg: Config, d: Path, use_slides: bool = False,
 
     # max_context_tokens is sized for whatever runs locally, which a hosted
     # model behind agy has no reason to be held to.
-    limit = (ANTIGRAVITY_TOKEN_LIMIT if cfg.backend == "antigravity"
-             else cfg.max_context_tokens)
+    if cfg.backend == "antigravity":
+        limit = ANTIGRAVITY_TOKEN_LIMIT
+    else:
+        limit = ollama_window(cfg.endpoint, cfg.model) or cfg.max_context_tokens
+        if limit != cfg.max_context_tokens:
+            print(f"  serving a {limit:,}-token window, not the "
+                  f"{cfg.max_context_tokens:,} in config — using the real one")
     budget = (limit - est_tokens(prompt) - cfg.reserve_output_tokens
               - len(images) * SLIDE_IMAGE_TOKENS)
     body, note = fit_to_context(body, budget)
