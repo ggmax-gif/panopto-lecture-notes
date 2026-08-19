@@ -2221,7 +2221,12 @@ def write_concept_note(base: Path, entry: dict) -> None:
 # ---------------------------------------------------------------- verify
 
 TIMESTAMP_RE = re.compile(r"\b(\d{1,2}):([0-5]\d)(?::([0-5]\d))?\b")
-NUMBER_RE = re.compile(r"\d[\d,]*(?:\.\d+)?")
+# Digits, with thousands grouped by comma or by any flavour of space. The
+# space forms matter: a model writing "21 000" rather than "21,000" was being
+# read as the two numbers 21 and 000, and "000" appears in no source, so every
+# such figure was reported unsupported. That is the checker inventing the
+# fault it then reports.
+NUMBER_RE = re.compile(r"\d{1,3}(?:[,\u00a0\u202f\u2009 ]\d{3})+(?:\.\d+)?|\d[\d,]*(?:\.\d+)?")
 
 # Curly quotations, where the direction of the mark says which end it is.
 CURLY_QUOTE_RE = re.compile(r'“([^”\n]{1,400})”')
@@ -2252,7 +2257,7 @@ def quotations(text: str) -> list[str]:
 
 
 def normalise_number(tok: str) -> str:
-    tok = tok.replace(",", "")
+    tok = re.sub(r"[,\u00a0\u202f\u2009 ]", "", tok)
     if "." in tok:
         tok = tok.rstrip("0").rstrip(".")
     return tok or "0"
