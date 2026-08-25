@@ -98,6 +98,10 @@ gitignored, and lectures are pruned to text and keyframes once processed. The
 material belongs to the university that made it. Keeping a local copy to revise
 from is ordinary use; republishing it isn't.
 
+The MIT licence covers this software only. Recordings, transcripts, slide
+images and notes produced with it remain the property of whoever owns the
+original teaching material.
+
 ## The app
 
 ```bash
