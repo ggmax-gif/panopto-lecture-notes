@@ -2372,6 +2372,7 @@ def verify_notes(d: Path, notes_name: str = "notes.md") -> dict:
                        if (d / "transcript.json").exists() else []))
     spoken_norm = re.sub(r"[^a-z0-9 ]+", " ", spoken.lower())
     spoken_norm = " ".join(spoken_norm.split())
+    spoken_words = set(spoken_norm.split())
 
     bad_quotes, quotes_checked = [], 0
     for q in quotations(notes):
@@ -2382,9 +2383,14 @@ def verify_notes(d: Path, notes_name: str = "notes.md") -> dict:
         if norm in spoken_norm:
             continue
         # ASR mangles wording, so accept a quote whose words are mostly there
-        # in order rather than demanding an exact match.
+        # rather than demanding an exact match.
+        #
+        # Whole words only. Testing `w in spoken_norm` searched the transcript
+        # as one long string, so "cat" matched inside "concatenate" and "ion"
+        # inside "million" — a quote built from common short words scored 100%
+        # without ever having been said, and the check passed invented lines.
         words = norm.split()
-        hits = sum(1 for w in words if w in spoken_norm)
+        hits = sum(1 for w in words if w in spoken_words)
         if hits / len(words) < 0.8:
             bad_quotes.append(q[:110])
 
