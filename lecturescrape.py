@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import difflib
 import json
 import os
 import re
@@ -1656,7 +1657,11 @@ def fit_to_context(text: str, budget: int) -> tuple[str, str]:
     if est_tokens(stripped) <= budget:
         return stripped, "slide text dropped entirely"
 
-    cut = stripped[: budget * 4]
+    # est_tokens counts len//3, so slicing at budget*4 handed back a third
+    # more than was asked for. Over an endpoint that silently evicts the
+    # oldest context rather than refusing, that loses the start of the
+    # transcript with nothing to show it happened.
+    cut = stripped[: budget * 3]
     return cut, "TRANSCRIPT TRUNCATED — lecture too long for this context window"
 
 
@@ -2150,6 +2155,18 @@ def mention_count(entry: dict) -> int:
     return len({m["id"] for m in entry["mentions"]})
 
 
+# Words that make a term a DIFFERENT idea rather than a longer name for the
+# same one. Without this, "conditional average treatment effect" folds into
+# "average treatment effect" purely because it is a word-superset — and CATE
+# and ATE are distinct estimands, so the merged note conflates two concepts
+# the lecturer was careful to separate.
+CONCEPT_QUALIFIERS = {
+    "conditional", "marginal", "local", "partial", "average", "net", "gross",
+    "log", "inverse", "relative", "absolute", "nominal", "real", "expected",
+    "weighted", "adjusted", "deferred", "permanent", "temporary",
+}
+
+
 def merge_narrower_concepts(index: dict) -> dict:
     """Fold specific concepts into the general one they contain.
 
@@ -2171,7 +2188,8 @@ def merge_narrower_concepts(index: dict) -> dict:
         for specific in keys[i + 1:]:
             if specific in absorbed:
                 continue
-            if gw < set(specific.split()):
+            extra = set(specific.split()) - gw
+            if gw < set(specific.split()) and not (extra & CONCEPT_QUALIFIERS):
                 absorbed[specific] = general
 
     if not absorbed:
@@ -2372,7 +2390,7 @@ def verify_notes(d: Path, notes_name: str = "notes.md") -> dict:
                        if (d / "transcript.json").exists() else []))
     spoken_norm = re.sub(r"[^a-z0-9 ]+", " ", spoken.lower())
     spoken_norm = " ".join(spoken_norm.split())
-    spoken_words = set(spoken_norm.split())
+    spoken_seq = spoken_norm.split()
 
     bad_quotes, quotes_checked = [], 0
     for q in quotations(notes):
@@ -2389,9 +2407,17 @@ def verify_notes(d: Path, notes_name: str = "notes.md") -> dict:
         # as one long string, so "cat" matched inside "concatenate" and "ion"
         # inside "million" — a quote built from common short words scored 100%
         # without ever having been said, and the check passed invented lines.
+        # Contiguity, not membership. Scoring "how many of these words appear
+        # anywhere in the lecture" discards order, so a quote assembled from
+        # scattered words scores high without ever having been said — and
+        # because deletion only ever raises the score, striking "not" from a
+        # real sentence yields a quote that means the opposite and verifies
+        # clean. Require one unbroken run to carry most of the quote instead.
         words = norm.split()
-        hits = sum(1 for w in words if w in spoken_words)
-        if hits / len(words) < 0.8:
+        match = difflib.SequenceMatcher(
+            None, words, spoken_seq, autojunk=False
+        ).find_longest_match(0, len(words), 0, len(spoken_seq))
+        if match.size / len(words) < 0.8:
             bad_quotes.append(q[:110])
 
     return {
