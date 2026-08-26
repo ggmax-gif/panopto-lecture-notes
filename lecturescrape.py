@@ -2812,7 +2812,19 @@ def cmd_serve(cfg: Config, args) -> None:
         protocol_version = "HTTP/1.1"
 
         def _cors(self):
-            self.send_header("Access-Control-Allow-Origin", "*")
+            """Only the Chrome extension may reach this cross-origin.
+
+            The wildcard this used to send let ANY page you happened to be
+            visiting read your whole library — lecture list, transcripts and
+            notes — because the daemon listens on localhost and the browser
+            will happily make that request on the page's behalf. The viewer is
+            served from this same origin and needs no CORS at all.
+            """
+            origin = self.headers.get("Origin", "")
+            if not origin.startswith("chrome-extension://"):
+                return
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Vary", "Origin")
             self.send_header("Access-Control-Allow-Headers", "content-type")
             self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
             self.send_header("Access-Control-Allow-Private-Network", "true")
