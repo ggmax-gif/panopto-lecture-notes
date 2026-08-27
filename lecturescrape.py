@@ -1615,54 +1615,80 @@ def est_tokens(text: str) -> int:
     return len(text) // 3
 
 
-def fit_to_context(text: str, budget: int) -> tuple[str, str]:
+def slide_blocks(text: str) -> list[tuple[int, int, int]]:
+    """Locate each slide's text block: (header index, end index, char count)."""
+    lines = text.splitlines()
+    blocks, i = [], 0
+    while i < len(lines):
+        if lines[i].startswith("**Slide text @"):
+            j, chars = i + 1, 0
+            while j < len(lines) and lines[j].startswith("> "):
+                chars += len(lines[j]) - 2
+                j += 1
+            blocks.append((i, j, chars))
+            i = j
+        else:
+            i += 1
+    return blocks
+
+
+def fit_to_context(text: str, budget: int) -> tuple[str, str, int]:
     """Trim a bundle to fit the model's context window.
 
-    A code-heavy lecture yields 60 OCR'd slides and a 33k-token bundle, which
-    overruns a 32k context. Ollama doesn't reject it — the request simply
-    stalls, and a timeout on a silent-but-open socket never fires. So the size
-    has to be dealt with before sending.
+    Returns (text, note, surviving_slide_chars). The caller needs that third
+    value: the delta prompt asserts the slides are present and authoritative
+    for every figure, so whether that assertion is still TRUE after trimming
+    decides which prompt may honestly be sent.
 
-    Slide text is trimmed first, keeping each slide's opening lines: the
-    heading says what was on screen, which is what the transcript needs to be
-    read against. The transcript itself is never cut — it's the thing the notes
-    are actually made from.
+    Whole slides are dropped rather than the tail of every slide. Truncating
+    each slide kept the headings and threw away the content — on a real
+    lecture that removed 402 of 479 figures, including every regression
+    coefficient, while the prompt still told the model the slide text was
+    authoritative for figures. A slide that survives here survives intact, so
+    anything it says can still be trusted; a slide that does not is simply
+    absent, which is the honest version of the same compromise.
+
+    The transcript is never cut — it is what the notes are made from.
     """
+    def slide_chars(s: str) -> int:
+        return sum(c for _, _, c in slide_blocks(s))
+
     if est_tokens(text) <= budget:
-        return text, ""
+        return text, "", slide_chars(text)
 
-    for keep in (6, 3, 1):
-        out, in_slide, kept = [], False, 0
-        for line in text.splitlines():
-            if line.startswith("**Slide text @"):
-                in_slide, kept = True, 0
-                out.append(line)
-                continue
-            if in_slide and line.startswith("> "):
-                kept += 1
-                if kept <= keep:
-                    out.append(line)
-                elif kept == keep + 1:
-                    out.append("> …")
-                continue
-            in_slide = False
-            out.append(line)
-        trimmed = "\n".join(out)
-        if est_tokens(trimmed) <= budget:
-            return trimmed, f"slide text trimmed to {keep} line(s) per slide"
+    lines = text.splitlines()
+    blocks = slide_blocks(text)
 
-    # Slides gone and still too big: the transcript alone overruns the window.
-    stripped = "\n".join(l for l in text.splitlines()
+    # Drop whole slides, sparsest first: a slide carrying two words of OCR
+    # costs the same framing as one carrying a table, and says far less.
+    order = [i for i, _ in sorted(enumerate(blocks), key=lambda b: b[1][2])]
+    dropped: set[int] = set()
+
+    for n, idx in enumerate(order, 1):
+        dropped.add(idx)
+        keep_line = [True] * len(lines)
+        for k in dropped:
+            h, e, _ = blocks[k]
+            for ln in range(h, e):
+                keep_line[ln] = False
+        candidate = "\n".join(l for l, ok in zip(lines, keep_line) if ok)
+        if est_tokens(candidate) <= budget:
+            note = (f"{n} of {len(blocks)} slides omitted to fit the context "
+                    "window; the rest are complete")
+            return candidate, note, slide_chars(candidate)
+
+    # Every slide gone and still too big: the transcript alone overruns.
+    stripped = "\n".join(l for l in lines
                          if not l.startswith(("**Slide text @", "> ")))
     if est_tokens(stripped) <= budget:
-        return stripped, "slide text dropped entirely"
+        return stripped, "all slides omitted to fit the context window", 0
 
     # est_tokens counts len//3, so slicing at budget*4 handed back a third
     # more than was asked for. Over an endpoint that silently evicts the
     # oldest context rather than refusing, that loses the start of the
     # transcript with nothing to show it happened.
     cut = stripped[: budget * 3]
-    return cut, "TRANSCRIPT TRUNCATED — lecture too long for this context window"
+    return cut, "TRANSCRIPT TRUNCATED — lecture too long for this context window", 0
 
 
 def run_analysis(cfg: Config, d: Path, use_slides: bool = False,
@@ -1696,9 +1722,35 @@ def run_analysis(cfg: Config, d: Path, use_slides: bool = False,
                   f"{cfg.max_context_tokens:,} in config — using the real one")
     budget = (limit - est_tokens(prompt) - cfg.reserve_output_tokens
               - len(images) * SLIDE_IMAGE_TOKENS)
-    body, note = fit_to_context(body, budget)
+    body, note, kept_slide_chars = fit_to_context(body, budget)
     if note:
         print(f"  bundle over context budget — {note}")
+
+    # The delta prompt asserts the slides are present and authoritative for
+    # every figure. Once trimming has taken enough of them away that is simply
+    # untrue, and the model is being asked to say what the recording adds
+    # beyond slides it cannot see — so it reports slide content as spoken, and
+    # sources figures from the transcript the same prompt calls unreliable.
+    # Re-derive the prompt from what survived rather than from slides.json.
+    if prompt is DELTA_PROMPT and kept_slide_chars < MIN_SLIDE_CHARS_FOR_DELTA:
+        print(f"  only {kept_slide_chars} chars of slide text survived the "
+              f"trim — falling back to summary notes, since a delta against "
+              f"slides the model cannot see would be guesswork")
+        prompt = SUMMARY_PROMPT
+        budget = (limit - est_tokens(prompt) - cfg.reserve_output_tokens
+                  - len(images) * SLIDE_IMAGE_TOKENS)
+        body, note, kept_slide_chars = fit_to_context(body, budget)
+        if note:
+            print(f"  re-fitted — {note}")
+
+    # Say it in the body, not just on stdout. The prompt claims the slides are
+    # all here; when they are not, the model has to be told, or it reports
+    # content from an omitted slide as something the lecturer only said.
+    if note and "omitted" in note:
+        body = (f"> NOTE: {note}. Slides you cannot see below were still shown\n"
+                f"> in the lecture. Do not claim something was said rather than\n"
+                f"> shown unless you can see the slides around that timestamp.\n\n"
+                + body)
 
     if cfg.backend in ("gemini-cli", "antigravity"):
         run = (antigravity_analysis if cfg.backend == "antigravity"
@@ -2344,6 +2396,13 @@ def lecture_duration(d: Path) -> float:
     return 0.0
 
 
+# Words whose absence flips a sentence. They must be matched outright, never
+# bridged by the gap tolerance that forgives ASR hiccups.
+NEGATIONS = {"not", "no", "never", "dont", "doesnt", "didnt", "wont", "cant",
+             "cannot", "isnt", "arent", "wasnt", "werent", "none", "neither",
+             "nor", "without", "except", "unless"}
+
+
 def verify_notes(d: Path, notes_name: str = "notes.md") -> dict:
     """Check every figure and timestamp in a set of notes against the source.
 
@@ -2392,6 +2451,17 @@ def verify_notes(d: Path, notes_name: str = "notes.md") -> dict:
     spoken_norm = " ".join(spoken_norm.split())
     spoken_seq = spoken_norm.split()
 
+    # Lecturers read things out, and models quote what was on screen — terminal
+    # output, a slide heading, a formula. Checking only the transcript flagged
+    # those as invented, so the slide text is a legitimate source too.
+    slide_text = " ".join(
+        " ".join(s.get("text") or []) for s in
+        (json.loads((d / "slides.json").read_text())
+         if (d / "slides.json").exists() else [])
+    )
+    slide_norm = " ".join(re.sub(r"[^a-z0-9 ]+", " ", slide_text.lower()).split())
+    corpora = [spoken_seq] + ([slide_norm.split()] if slide_norm else [])
+
     bad_quotes, quotes_checked = [], 0
     for q in quotations(notes):
         norm = " ".join(re.sub(r"[^a-z0-9 ]+", " ", q.lower()).split())
@@ -2407,17 +2477,36 @@ def verify_notes(d: Path, notes_name: str = "notes.md") -> dict:
         # as one long string, so "cat" matched inside "concatenate" and "ion"
         # inside "million" — a quote built from common short words scored 100%
         # without ever having been said, and the check passed invented lines.
-        # Contiguity, not membership. Scoring "how many of these words appear
-        # anywhere in the lecture" discards order, so a quote assembled from
-        # scattered words scores high without ever having been said — and
-        # because deletion only ever raises the score, striking "not" from a
-        # real sentence yields a quote that means the opposite and verifies
-        # clean. Require one unbroken run to carry most of the quote instead.
+        # Order matters, gaps do not. Membership alone ("are these words
+        # anywhere in the lecture") lets a quote assembled from scattered
+        # words pass, and since deletion only raises that score, striking
+        # "not" from a real sentence produced an inverted quote that verified
+        # clean. But demanding one unbroken run is too harsh the other way: a
+        # single ASR hiccup mid-sentence flagged genuine quotations.
+        #
+        # So: sum the in-order matching blocks. SequenceMatcher only pairs
+        # words that appear in the same sequence, which keeps the ordering
+        # guarantee, while tolerating a garbled word in the middle.
         words = norm.split()
-        match = difflib.SequenceMatcher(
-            None, words, spoken_seq, autojunk=False
-        ).find_longest_match(0, len(words), 0, len(spoken_seq))
-        if match.size / len(words) < 0.8:
+        best, best_covered = 0, set()
+        for hay in corpora:
+            blocks = difflib.SequenceMatcher(
+                None, words, hay, autojunk=False).get_matching_blocks()
+            size = sum(b.size for b in blocks)
+            if size > best:
+                best = size
+                best_covered = {i for b in blocks for i in range(b.a, b.a + b.size)}
+
+        # A negation carries the whole meaning of a sentence, so it cannot be
+        # one of the words the gap-tolerance skips over. Allowing it lets
+        # "you do not need to know this for the exam" match a passage saying
+        # you DO — the quote inverts the lecturer and still verifies clean.
+        negated = {i for i, w in enumerate(words) if w in NEGATIONS}
+        if negated - best_covered:
+            bad_quotes.append(q[:110])
+            continue
+
+        if best / len(words) < 0.8:
             bad_quotes.append(q[:110])
 
     return {
