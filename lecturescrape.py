@@ -490,7 +490,7 @@ def cmd_process(cfg: Config, args) -> None:
         # A transcript-only lecture already has a bundle. Once it gains a
         # video its slides still need extracting, so "has a bundle" isn't
         # enough to call it done.
-        needs_slides = find_video(d) and not (d / "slides.json").exists()
+        needs_slides = find_video(d) and not slides_extracted(d)
         if bundle.exists() and not args.force and not needs_slides:
             print(f"skip (done): {d.name}")
             continue
@@ -871,18 +871,25 @@ def annotate_slides(cfg: Config, d: Path, slides: list[dict]) -> list[dict]:
 # ------------------------------------------------- disk
 
 
+def slides_extracted(d: Path) -> bool:
+    """Whether this lecture's frames have actually been pulled out of the video.
+
+    A missing or unreadable slides.json means they have not, and the recording
+    is still the only copy of them.
+    """
+    try:
+        return bool(json.loads((d / "slides.json").read_text()))
+    except (OSError, ValueError):
+        return False
+
+
 def is_pruned(d: Path) -> bool:
     """Distinguishes 'we had the video and threw it away' from 'we never
     downloaded one'. Slides can only exist if a video was decoded, so their
     presence without a video means it was pruned — and re-downloading would be
     a waste rather than a fix.
     """
-    if find_video(d):
-        return False
-    try:
-        return bool(json.loads((d / "slides.json").read_text()))
-    except (OSError, json.JSONDecodeError):
-        return False
+    return not find_video(d) and slides_extracted(d)
 
 
 def prune_video(d: Path) -> int:
@@ -891,12 +898,20 @@ def prune_video(d: Path) -> int:
     ~148 MB becomes ~5 MB. Everything the notes rely on survives: the slides
     are images on disk, the transcript is text, and each timestamp already
     links back into Panopto for the moments you want to actually hear.
+
+    A bundle on its own is not proof of that. A lecture Panopto had captioned
+    but that had not been downloaded yet gets a transcript-only bundle, so
+    pruning on the strength of one destroys the recording as soon as it lands —
+    and `process` then reports "skip (done)" forever, because the bundle it
+    checks for is present and the video it would read slides from is gone.
     """
     video = find_video(d)
     if not video:
         return 0
     if not (d / "bundle.md").exists():
         return 0                      # never discard before it's been processed
+    if not slides_extracted(d):
+        return 0                      # the slides are still only inside the video
     freed = video.stat().st_size
     video.unlink()
     return freed
@@ -927,6 +942,9 @@ def cmd_prune(cfg: Config, args) -> None:
             continue
         if not (d / "bundle.md").exists():
             print(f"skip (not processed): {d.name[:56]}")
+            continue
+        if not slides_extracted(d):
+            print(f"skip (slides not extracted yet): {d.name[:44]}")
             continue
         size = find_video(d).stat().st_size
         if args.dry_run:
@@ -1817,21 +1835,44 @@ def seconds_of(ts: str) -> int:
     return p[0] * 3600 + p[1] * 60 + p[2] if len(p) == 3 else p[0] * 60 + p[1]
 
 
+_TS = r"\d{1,2}:[0-5]\d(?::[0-5]\d)?"
+
+# Both `12:58` and `[12:58]` are timestamps to link. What must be left exactly
+# as it is: a link that already exists, a wikilink, and any span of code.
+LINKABLE_TS_RE = re.compile(
+    rf"""
+      (?P<skip> ```[\s\S]*?```           # a fenced code block
+              | `[^`\n]*`                 # an inline code span
+              | \[\[[^\]\n]*\]\]          # a wikilink
+              | \[[^\]\n]*\]\([^)\n]*\)   # a link that already exists
+      )
+    | \[(?P<braced>{_TS})\]
+    | (?<![\w.:])(?P<bare>{_TS})(?![\w.]|:\d)
+    """,
+    re.VERBOSE,
+)
+
+
 def link_timestamps(text: str, url: str) -> str:
     """Turn every `12:58` into a link that opens the recording at that moment.
 
     This is what makes the exported note usable when you missed the lecture:
     read the notes, and click any point you want to actually hear.
+
+    The model writes a timestamp both ways — `at 12:58` and `[12:58]` — and
+    every line of the transcript is bracketed, so both forms have to be caught.
+    Skipping anything that merely started with `[` meant the bracketed form
+    never linked: 99 dead timestamps in the notes and every transcript line.
     """
     base = url.split("&")[0]
 
     def sub(m):
-        if m.group(0).startswith("["):          # already inside a link
+        stamp = m.group("braced") or m.group("bare")
+        if not stamp:                 # code, a wikilink, or an existing link
             return m.group(0)
-        return f"[{m.group(1)}]({base}&start={seconds_of(m.group(1))})"
+        return f"[{stamp}]({base}&start={seconds_of(stamp)})"
 
-    return re.sub(r"\[?(\b\d{1,2}:[0-5]\d(?::[0-5]\d)?\b)\]?(?!\()",
-                  lambda m: sub(m), text)
+    return LINKABLE_TS_RE.sub(sub, text)
 
 
 def lecture_date(d: Path, info: dict) -> str:
@@ -1991,12 +2032,32 @@ def export_obsidian(cfg: Config, d: Path, vault: Path, notes_name: str = "notes.
     note_path = note_dir / f"{note_name}.md"
     note_path.write_text("\n".join(out))
 
+    # Exporting under a new name — session_marker gaining its L1, say — leaves
+    # the old note sitting there, and the module index then counts one lecture
+    # as two. Only a note this exporter wrote for this same recording is
+    # removed: it must carry generated frontmatter naming this lecture id.
+    superseded = []
+    keep = {note_name, f"{note_name} (transcript)"}
+    for stale in sorted(note_dir.glob("*.md")):
+        if stale.stem in keep:
+            continue
+        head = stale.read_text(errors="ignore")[:800]
+        if not head.startswith("---") or vid not in head:
+            continue
+        generated = (f"lecture-id: {vid}" in head          # a note
+                     or "  - transcript" in head)          # its transcript
+        if not generated:
+            continue
+        stale.unlink()
+        superseded.append(stale.stem)
+
     update_module_note(cfg, vault, module)
 
     return {
         "note": str(note_path.relative_to(vault)),
         "slides": len(embeds),
         "transcript": transcript_note,
+        "superseded": superseded,
         "vault": str(vault),
     }
 
@@ -2075,6 +2136,8 @@ def cmd_export(cfg: Config, args) -> None:
                                 with_transcript=args.with_transcript,
                                 concept_index=index)
             print(f"exported: {r['note']}  ({r['slides']} slides)")
+            for stem in r.get("superseded", []):
+                print(f"  removed note superseded by a rename: {stem}")
         except RuntimeError as e:
             print(f"failed: {d.name[:50]} — {e}")
 
