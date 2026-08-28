@@ -699,18 +699,35 @@ def ocr_image(path: Path) -> list[str]:
     return lines
 
 
+# Local contrast below which a frame is considered to have nothing on it.
+# Measured on this library: a bare desktop scores 0.14, the sparsest real
+# slide 1.24, so 0.5 clears both by about 3x.
+BLANK_FRAME_CONTRAST = 0.5
+
+
 def is_blank_frame(path: Path) -> bool:
-    """A near-uniform frame is the presenter's desktop between slides, not a
-    slide. Scene detection catches these because the screen genuinely changed,
-    but they carry nothing and end up embedded in the exported notes."""
+    """A frame with nothing on it is the presenter's desktop between slides,
+    not a slide. Scene detection catches these because the screen genuinely
+    changed, but they carry nothing and end up embedded in the exported notes.
+
+    Measured as local contrast — how far the frame differs from its own blur —
+    and not as overall spread, because spread is inverted for exactly the
+    slides worth keeping: a page packed with small text averages to a flat grey
+    once downsampled, so the denser the slide the blanker it scores. Every one
+    of the 175 slides in this library scored above the old 8.0 cutoff, but the
+    three closest to it, at 8.21, were the densest slides present — a LaTeX
+    regression table of coefficients and standard errors.
+    """
     try:
-        from PIL import Image, ImageStat
+        from PIL import Image, ImageChops, ImageFilter, ImageStat
     except ImportError:
         return False
     try:
         with Image.open(path) as im:
-            small = im.convert("L").resize((48, 48))
-            return ImageStat.Stat(small).stddev[0] < 8.0
+            grey = im.convert("L").resize((512, 512))
+            edges = ImageChops.difference(
+                grey, grey.filter(ImageFilter.GaussianBlur(2)))
+            return ImageStat.Stat(edges).mean[0] < BLANK_FRAME_CONTRAST
     except OSError:
         return False
 
@@ -810,8 +827,7 @@ def annotate_slides(cfg: Config, d: Path, slides: list[dict]) -> list[dict]:
     if all("text" in s for s in slides):
         return slides  # already annotated
 
-    # Drop blank frames before spending OCR on them.
-    def drop_blanks(items: list[dict], why: str) -> list[dict]:
+    def drop_blanks(items: list[dict]) -> list[dict]:
         """Blank frames are the presenter's desktop between slides. Decided by
         file path rather than dict equality — comparing dicts against a growing
         list is quadratic, and a code-heavy lecture yields hundreds of frames."""
@@ -822,22 +838,28 @@ def annotate_slides(cfg: Config, d: Path, slides: list[dict]) -> list[dict]:
             if s["file"] not in keeping:
                 (d / s["file"]).unlink(missing_ok=True)
         if len(keep) < len(items):
-            print(f"  dropped {len(items) - len(keep)} blank frame(s){why}")
+            print(f"  dropped {len(items) - len(keep)} blank frame(s)")
         return keep
 
-    slides = drop_blanks(slides, "")
-    if not slides:
-        return slides
+    reading = cfg.ocr and ocr_available()
+    if cfg.ocr and not reading:
+        print("  OCR unavailable (pip install pyobjc-framework-Vision) — skipping")
 
-    if cfg.ocr and ocr_available():
+    if reading:
         for s in slides:
             s["text"] = ocr_image(d / s["file"])
         with_text = sum(1 for s in slides if s["text"])
         print(f"  OCR: text found on {with_text}/{len(slides)} slides")
 
-        # A frame can still be blank once OCR confirms there's nothing on it.
-        slides = drop_blanks(slides, " after OCR")
+    # Only now, so a frame is discarded for having no text on it *and* nothing
+    # visible on it. Dropping before OCR saved a few seconds and meant a slide
+    # the eye can read but the metric cannot was deleted unread, with the video
+    # pruned afterwards and no copy of it left anywhere.
+    slides = drop_blanks(slides)
+    if not slides:
+        return slides
 
+    if reading:
         # Animated builds repeat the previous slide plus a line or two. Collapse
         # them and keep the last, which is the finished slide.
         merged = [slides[0]]
@@ -852,8 +874,6 @@ def annotate_slides(cfg: Config, d: Path, slides: list[dict]) -> list[dict]:
         if len(merged) < len(slides):
             print(f"  {len(slides)} -> {len(merged)} after merging repeated text")
         slides = merged
-    elif cfg.ocr:
-        print("  OCR unavailable (pip install pyobjc-framework-Vision) — skipping")
 
     if len(slides) > cfg.max_slides:
         print(f"  {len(slides)} keyframes — thinning to {cfg.max_slides}")
