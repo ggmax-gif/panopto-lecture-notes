@@ -151,8 +151,21 @@ def cmd_sync(cfg: Config, args) -> None:
             print(f"skipping (not a Panopto link): {url[:70]}")
             continue
         url = target["url"]
+        label = name or (f"auto by module code "
+                         f"({target['kind']} {target['id'][:8]})")
 
-        print(f"\n=== {name or 'auto (by module code)'} ===")
+        print(f"\n=== {label} ===")
+
+        # Check the session before starting. Without this an expired Recap
+        # cookie surfaces as a bare yt-dlp exit code, once per lecture, with
+        # the one thing you need to know — log back in — buried in it.
+        try:
+            preflight_auth(cfg, url)
+        except RuntimeError as e:
+            print(f"  ! {e}")
+            failures.append(label)
+            continue
+
         cmd = ytdlp_cmd(cfg, name, url, captions_only=args.captions_only)
         if args.limit:
             cmd += ["--playlist-items", f"1:{args.limit}"]
@@ -162,8 +175,8 @@ def cmd_sync(cfg: Config, args) -> None:
 
         rc = subprocess.call(cmd)
         if rc != 0:
-            failures.append(name)
-            print(f"  ! yt-dlp exited {rc} for {name}")
+            failures.append(label)
+            print(f"  ! yt-dlp exited {rc} for {label}")
 
     if failures:
         print(f"\nfinished with problems in: {', '.join(failures)}")
@@ -180,8 +193,8 @@ def safe_name(s: str) -> str:
 def ytdlp_cmd(cfg: Config, module: str | None, url: str,
               captions_only: bool = False) -> list[str]:
     """Shared yt-dlp invocation. One directory per lecture, so the transcript
-    and slides end up alongside the video. With no module name, a folder files
-    itself under its own Panopto title."""
+    and slides end up alongside the video. With no module name, each lecture
+    files itself by the module code in its own title."""
     extract_module = []
     # Cap the *title field* rather than using --trim-filenames, which truncates
     # the whole path tail: a long title loses its "[id]" and even the "/video"
@@ -252,18 +265,38 @@ def preflight_auth(cfg: Config, url: str) -> None:
     """
     proc = subprocess.run(
         ["yt-dlp", "--simulate", "--quiet", "--no-warnings",
+         "--flat-playlist", "--print", "%(id)s",
          "--playlist-items", "1", "--socket-timeout", "20",
          "--cookies-from-browser", cfg.browser, url],
         capture_output=True, text=True,
     )
     if proc.returncode == 0:
-        return
+        if any(line.strip() for line in (proc.stdout or "").splitlines()):
+            return
+        # Exit 0 having listed nothing. A single lecture fails loudly when the
+        # session has expired, but Panopto's folder API answers an
+        # unauthenticated caller with an empty list rather than an error — so
+        # yt-dlp succeeds, and a sync of a 131-lecture folder reports
+        # "sync complete" having done nothing at all. All term, every week.
+        host = re.search(r"https?://([^/\s]+)", url)
+        raise RuntimeError(
+            f"{host.group(1) if host else 'Recap'} listed no lectures here. "
+            f"Either the session in {cfg.browser} has expired — log back in "
+            "and try again — or this folder is empty, which is what a Recap "
+            "folder looks like once you've been unenrolled from the module."
+        )
 
     err = (proc.stderr or "") + (proc.stdout or "")
     if "registered users" in err or "not available" in err.lower():
         host = re.search(r"https?://([^/\s]+)", url)
         raise RuntimeError(AUTH_HINT.format(
             host=host.group(1) if host else "Recap", browser=cfg.browser))
+    if "unsupported browser" in err.lower():
+        raise RuntimeError(
+            f"config.yaml asks for cookies from {cfg.browser!r}, which yt-dlp "
+            "doesn't support. Use one of: brave, chrome, chromium, edge, "
+            "firefox, opera, safari, vivaldi, whale."
+        )
     if "could not find" in err.lower() and "cookies" in err.lower():
         raise RuntimeError(
             f"Couldn't read cookies from {cfg.browser}. Check the browser name "

@@ -181,8 +181,10 @@ that downloads the rest in place. That upgrade path is why caption-only fetches
 deliberately skip the download archive — recording the id there would make the
 later full download a silent no-op.
 
-Leave **Module name** blank and a folder files itself under its own Panopto
-title. Adding a module downloads and processes every lecture in it but doesn't
+Leave **Module name** blank and each lecture files itself by the module code in
+its own title — a Recap folder is usually a mixed archive rather than one
+module, and anything with no recognisable code lands in `Unsorted`. Adding a
+module downloads and processes every lecture in it but doesn't
 write notes for any — that would run for hours unattended. Open one and hit
 **Write notes**.
 
@@ -366,8 +368,13 @@ keychain entries the terminal can't reach, and Safari's cookie file is
 TCC-protected (it needs Full Disk Access for your terminal, in System Settings →
 Privacy & Security).
 
-Sessions expire every so often. The error is always the same — *"This video is
-only available for registered users."* Log back into Recap and re-run.
+Sessions expire every so often, and there are two symptoms rather than one. A
+single lecture fails loudly: *"This video is only available for registered
+users."* A folder doesn't fail at all — Panopto answers an unauthenticated
+folder listing with an empty list, so `yt-dlp` exits successfully having found
+nothing, and an unguarded sync reports success having downloaded no lectures.
+`sync` and `autosync` check for both before starting and say which one they hit.
+Either way: log back into Recap and re-run.
 
 ## Use
 
