@@ -863,15 +863,24 @@ def annotate_slides(cfg: Config, d: Path, slides: list[dict]) -> list[dict]:
     def drop_blanks(items: list[dict]) -> list[dict]:
         """Blank frames are the presenter's desktop between slides. Decided by
         file path rather than dict equality — comparing dicts against a growing
-        list is quadratic, and a code-heavy lecture yields hundreds of frames."""
+        list is quadratic, and a code-heavy lecture yields hundreds of frames.
+
+        Set-aside frames move into slides/dropped/, they are not deleted.
+        Contrast cannot tell a clean desktop (0.14) from a pale line diagram
+        (0.13), so a wrongly judged frame has to stay recoverable after the
+        video is pruned: a kept blank costs an empty image in the notes, a
+        lost diagram costs the only copy in existence."""
         keep = [s for s in items
                 if s.get("text") or not is_blank_frame(d / s["file"])]
         keeping = {s["file"] for s in keep}
+        bin_ = d / SLIDE_DIR / "dropped"
         for s in items:
-            if s["file"] not in keeping:
-                (d / s["file"]).unlink(missing_ok=True)
+            if s["file"] not in keeping and (d / s["file"]).exists():
+                bin_.mkdir(parents=True, exist_ok=True)
+                (d / s["file"]).rename(bin_ / Path(s["file"]).name)
         if len(keep) < len(items):
-            print(f"  dropped {len(items) - len(keep)} blank frame(s)")
+            print(f"  set aside {len(items) - len(keep)} blank frame(s) in "
+                  f"{SLIDE_DIR}/dropped/")
         return keep
 
     reading = cfg.ocr and ocr_available()
@@ -884,15 +893,19 @@ def annotate_slides(cfg: Config, d: Path, slides: list[dict]) -> list[dict]:
         with_text = sum(1 for s in slides if s["text"])
         print(f"  OCR: text found on {with_text}/{len(slides)} slides")
 
-    # Only now, so a frame is discarded for having no text on it *and* nothing
-    # visible on it. Dropping before OCR saved a few seconds and meant a slide
-    # the eye can read but the metric cannot was deleted unread, with the video
-    # pruned afterwards and no copy of it left anywhere.
-    slides = drop_blanks(slides)
-    if not slides:
-        return slides
+        # Only with OCR's testimony in hand, so a frame is set aside for
+        # having no text on it *and* nothing visible on it. Without OCR the
+        # contrast score is the only voice and it cannot be trusted alone,
+        # so blanks are simply kept.
+        slides = drop_blanks(slides)
+        if not slides:
+            # Written here, not at the end this return skips: a stale
+            # slides.json naming frames that no longer exist reads as
+            # "slides extracted", and a later prune then takes the video —
+            # the only remaining copy of a lecture with nothing on disk.
+            (d / "slides.json").write_text("[]")
+            return slides
 
-    if reading:
         # Animated builds repeat the previous slide plus a line or two. Collapse
         # them and keep the last, which is the finished slide.
         merged = [slides[0]]
@@ -1445,6 +1458,12 @@ and no commentary on what you did.
 # sent has to be paid for out of the text budget rather than assumed free.
 SLIDE_IMAGE_TOKENS = 1200
 
+# The least of a context window worth sending a lecture into. Below this the
+# arithmetic has gone negative or nearly so — an Ollama serving its 2,048
+# default, say — and fit_to_context(budget * 3) as a slice bound would have
+# quietly sent an almost untrimmed bundle into a window a tenth its size.
+MIN_CONTEXT_BUDGET = 2000
+
 # Digits, currency, percentages, an equals sign: the slides worth spending an
 # image on. OCR reads prose off a slide perfectly well — what it destroys is
 # the tables and formulas, which is what the picture is for.
@@ -1744,8 +1763,9 @@ def fit_to_context(text: str, budget: int) -> tuple[str, str, int]:
                 keep_line[ln] = False
         candidate = "\n".join(l for l, ok in zip(lines, keep_line) if ok)
         if est_tokens(candidate) <= budget:
+            rest = "the rest are complete" if n < len(blocks) else "none remain"
             note = (f"{n} of {len(blocks)} slides omitted to fit the context "
-                    "window; the rest are complete")
+                    f"window; {rest}")
             return candidate, note, slide_chars(candidate)
 
     # Every slide gone and still too big: the transcript alone overruns.
@@ -1758,7 +1778,7 @@ def fit_to_context(text: str, budget: int) -> tuple[str, str, int]:
     # more than was asked for. Over an endpoint that silently evicts the
     # oldest context rather than refusing, that loses the start of the
     # transcript with nothing to show it happened.
-    cut = stripped[: budget * 3]
+    cut = stripped[: max(budget, 0) * 3]     # a negative budget is not a slice
     return cut, "TRANSCRIPT TRUNCATED — lecture too long for this context window", 0
 
 
@@ -1793,6 +1813,14 @@ def run_analysis(cfg: Config, d: Path, use_slides: bool = False,
                   f"{cfg.max_context_tokens:,} in config — using the real one")
     budget = (limit - est_tokens(prompt) - cfg.reserve_output_tokens
               - len(images) * SLIDE_IMAGE_TOKENS)
+    if budget < MIN_CONTEXT_BUDGET:
+        raise RuntimeError(
+            f"a {limit:,}-token window leaves {budget:,} tokens for the "
+            f"lecture once the prompt and {cfg.reserve_output_tokens:,} "
+            "reserved for the reply are taken out — too little to send "
+            "anything. Raise OLLAMA_CONTEXT_LENGTH (see config.yaml) or "
+            "lower reserve_output_tokens.")
+    pristine = body
     body, note, kept_slide_chars = fit_to_context(body, budget)
     if note:
         print(f"  bundle over context budget — {note}")
@@ -1810,7 +1838,18 @@ def run_analysis(cfg: Config, d: Path, use_slides: bool = False,
         prompt = SUMMARY_PROMPT
         budget = (limit - est_tokens(prompt) - cfg.reserve_output_tokens
                   - len(images) * SLIDE_IMAGE_TOKENS)
-        body, note, kept_slide_chars = fit_to_context(body, budget)
+        # The summary prompt opens with "No slides are available", so make
+        # that true: strip the slide text outright rather than sending
+        # whatever scraps the delta budget happened to leave. And strip from
+        # the PRISTINE bundle — refitting the already-trimmed body returned
+        # an empty note, and the model was never told anything was missing.
+        stripped = "\n".join(l for l in pristine.splitlines()
+                             if not l.startswith(("**Slide text @", "> ")))
+        body, note, kept_slide_chars = fit_to_context(stripped, budget)
+        body = ("> NOTE: this lecture does have slides, but they do not fit\n"
+                "> this context window alongside the transcript, so none are\n"
+                "> included. Figures shown on screen but never said aloud\n"
+                "> are missing here.\n\n" + body)
         if note:
             print(f"  re-fitted — {note}")
 
@@ -1895,10 +1934,12 @@ _TS = r"\d{1,2}:[0-5]\d(?::[0-5]\d)?"
 LINKABLE_TS_RE = re.compile(
     rf"""
       (?P<skip> ```[\s\S]*?```           # a fenced code block
+              | ~~~[\s\S]*?~~~            # the other fence markdown allows
               | `[^`\n]*`                 # an inline code span
               | \[\[[^\]\n]*\]\]          # a wikilink
               | \[[^\]\n]*\]\([^)\n]*\)   # a link that already exists
       )
+    | \[(?P<r1>{_TS})\s*(?P<dash>[–—-])\s*(?P<r2>{_TS})\]
     | \[(?P<braced>{_TS})\]
     | (?<![\w.:])(?P<bare>{_TS})(?![\w.]|:\d)
     """,
@@ -1920,6 +1961,10 @@ def link_timestamps(text: str, url: str) -> str:
     base = url.split("&")[0]
 
     def sub(m):
+        if m.group("r1"):             # a bracketed range: [19:01–19:34].
+            a, b = m.group("r1"), m.group("r2")
+            return (f"[{a}]({base}&start={seconds_of(a)})" + m.group("dash")
+                    + f"[{b}]({base}&start={seconds_of(b)})")
         stamp = m.group("braced") or m.group("bare")
         if not stamp:                 # code, a wikilink, or an existing link
             return m.group(0)
@@ -1963,6 +2008,33 @@ def session_marker(d: Path) -> str:
 
 def vault_safe(name: str) -> str:
     return re.sub(r'[\\/:*?"<>|#^\[\]]', "-", name).strip() or "Untitled"
+
+
+def written_for(path: Path, vid: str) -> bool:
+    """Whether this note's frontmatter identifies it as one export_obsidian
+    wrote for this recording. Only the block between the opening and closing
+    --- counts, matched line by line — never body text, where a pasted
+    lecture URL and an indented bullet starting "- transcript" once cost a
+    user their own note."""
+    try:
+        with path.open(errors="ignore") as f:
+            if f.readline().rstrip() != "---":
+                return False
+            fm = []
+            for line in f:
+                if line.rstrip() == "---":
+                    break
+                fm.append(line.rstrip("\n"))
+                if len(fm) > 50:
+                    return False        # not a frontmatter block we wrote
+            else:
+                return False            # opening --- never closed
+    except OSError:
+        return False
+    if f"lecture-id: {vid}" in fm:      # the note itself
+        return True
+    return (any(l.startswith("source:") and vid in l for l in fm)
+            and "  - transcript" in fm)  # its companion transcript
 
 
 def export_obsidian(cfg: Config, d: Path, vault: Path, notes_name: str = "notes.md",
@@ -2087,21 +2159,26 @@ def export_obsidian(cfg: Config, d: Path, vault: Path, notes_name: str = "notes.
 
     # Exporting under a new name — session_marker gaining its L1, say — leaves
     # the old note sitting there, and the module index then counts one lecture
-    # as two. Only a note this exporter wrote for this same recording is
-    # removed: it must carry generated frontmatter naming this lecture id.
+    # as two. Only a note whose FRONTMATTER shows this exporter wrote it for
+    # this recording is removed — a substring match over the head of the file
+    # let a user's own revision note qualify for containing a pasted lecture
+    # link and a body bullet that happened to begin "- transcript". And
+    # removed means moved to the vault's .trash/, never unlinked: a copy of a
+    # generated note that someone spent an evening annotating carries exactly
+    # the frontmatter of the original, and no test can tell those apart.
     superseded = []
     keep = {note_name, f"{note_name} (transcript)"}
     for stale in sorted(note_dir.glob("*.md")):
         if stale.stem in keep:
             continue
-        head = stale.read_text(errors="ignore")[:800]
-        if not head.startswith("---") or vid not in head:
+        if not written_for(stale, vid):
             continue
-        generated = (f"lecture-id: {vid}" in head          # a note
-                     or "  - transcript" in head)          # its transcript
-        if not generated:
-            continue
-        stale.unlink()
+        trash = vault / ".trash"
+        trash.mkdir(exist_ok=True)
+        dest, n = trash / stale.name, 1
+        while dest.exists():
+            dest, n = trash / f"{stale.stem} ({n}).md", n + 1
+        stale.rename(dest)
         superseded.append(stale.stem)
 
     update_module_note(cfg, vault, module)
@@ -2190,7 +2267,7 @@ def cmd_export(cfg: Config, args) -> None:
                                 concept_index=index)
             print(f"exported: {r['note']}  ({r['slides']} slides)")
             for stem in r.get("superseded", []):
-                print(f"  removed note superseded by a rename: {stem}")
+                print(f"  superseded by a rename, moved to .trash: {stem}")
         except RuntimeError as e:
             print(f"failed: {d.name[:50]} — {e}")
 
