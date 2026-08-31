@@ -1939,7 +1939,7 @@ LINKABLE_TS_RE = re.compile(
               | \[\[[^\]\n]*\]\]          # a wikilink
               | \[[^\]\n]*\]\([^)\n]*\)   # a link that already exists
       )
-    | \[(?P<r1>{_TS})\s*(?P<dash>[–—-])\s*(?P<r2>{_TS})\]
+    | \[(?P<multi>{_TS}(?:\s*[–—,-]\s*{_TS})+)\]
     | \[(?P<braced>{_TS})\]
     | (?<![\w.:])(?P<bare>{_TS})(?![\w.]|:\d)
     """,
@@ -1961,10 +1961,14 @@ def link_timestamps(text: str, url: str) -> str:
     base = url.split("&")[0]
 
     def sub(m):
-        if m.group("r1"):             # a bracketed range: [19:01–19:34].
-            a, b = m.group("r1"), m.group("r2")
-            return (f"[{a}]({base}&start={seconds_of(a)})" + m.group("dash")
-                    + f"[{b}]({base}&start={seconds_of(b)})")
+        if m.group("multi"):
+            # A bracketed range or list — [19:01–19:34], [2:09, 2:15] — where
+            # linking each stamp separately left the outer brackets behind as
+            # stray literals. Link every stamp, keep the separators, and the
+            # brackets go.
+            return re.sub(_TS, lambda t: f"[{t.group(0)}]"
+                          f"({base}&start={seconds_of(t.group(0))})",
+                          m.group("multi"))
         stamp = m.group("braced") or m.group("bare")
         if not stamp:                 # code, a wikilink, or an existing link
             return m.group(0)
