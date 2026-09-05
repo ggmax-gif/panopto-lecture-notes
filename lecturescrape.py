@@ -496,6 +496,26 @@ def lecture_dirs() -> list[Path]:
     return sorted(best.values())
 
 
+def lecture_info(d: Path) -> dict:
+    """yt-dlp's sidecar metadata for a lecture, or {} when there isn't any.
+
+    Six call sites globbed, read and parsed this file for themselves, with
+    three different sets of caught exceptions between them and not one
+    catching OSError — so an info.json that exists but cannot be read took
+    the whole command down. Two places asking the same question is how
+    is_pruned and slides_extracted drifted apart; one question, one answer.
+    """
+    info_file = next(iter(d.glob("*.info.json")), None)
+    if not info_file:
+        return {}
+    try:
+        info = json.loads(info_file.read_text())
+    except (OSError, ValueError):     # JSONDecodeError is a ValueError
+        return {}
+    # A JSON file is not necessarily a JSON *object*; every caller .get()s.
+    return info if isinstance(info, dict) else {}
+
+
 def find_video(d: Path) -> Path | None:
     for ext in ("mp4", "mkv", "webm", "m4v"):
         p = d / f"{VIDEO_NAME}.{ext}"
@@ -629,13 +649,7 @@ def fetch_audio(cfg: Config, d: Path) -> Path:
     if cached:
         return cached
 
-    info_file = next(iter(d.glob("*.info.json")), None)
-    url = None
-    if info_file:
-        try:
-            url = json.loads(info_file.read_text()).get("webpage_url")
-        except json.JSONDecodeError:
-            pass
+    url = lecture_info(d).get("webpage_url")
     if not url:
         raise RuntimeError("no audio in the video and no source URL to re-fetch it")
 
@@ -1029,14 +1043,7 @@ def cmd_prune(cfg: Config, args) -> None:
 
 
 def write_bundle(d: Path, segments: list[dict], slides: list[dict]):
-    info = {}
-    info_file = next(iter(d.glob("*.info.json")), None)
-    if info_file:
-        try:
-            info = json.loads(info_file.read_text())
-        except json.JSONDecodeError:
-            pass
-
+    info = lecture_info(d)
     title = info.get("title") or d.name
     duration = info.get("duration")
     upload = info.get("upload_date") or ""
@@ -2001,14 +2008,7 @@ def export_obsidian(cfg: Config, d: Path, vault: Path, notes_name: str = "notes.
     if not notes_file.exists():
         raise RuntimeError(f"{notes_name} not found — write notes first")
 
-    info = {}
-    info_file = next(iter(d.glob("*.info.json")), None)
-    if info_file:
-        try:
-            info = json.loads(info_file.read_text())
-        except json.JSONDecodeError:
-            pass
-
+    info = lecture_info(d)
     vid = lecture_id(d)
     module = vault_safe(d.parent.name)
     title = clean_title(d, info)
@@ -2320,14 +2320,7 @@ def build_concept_index(dirs: list[Path], notes_name: str = "notes.md") -> dict:
         f = d / notes_name
         if not f.exists():
             continue
-        info = {}
-        info_file = next(iter(d.glob("*.info.json")), None)
-        if info_file:
-            try:
-                info = json.loads(info_file.read_text())
-            except json.JSONDecodeError:
-                pass
-        url = info.get("webpage_url") or (
+        url = lecture_info(d).get("webpage_url") or (
             f"https://{DEFAULT_HOST}/Panopto/Pages/Viewer.aspx?id={lecture_id(d)}")
 
         for c in parse_concepts(f.read_text()):
@@ -2534,13 +2527,10 @@ def numbers_in(text: str) -> set[str]:
 
 
 def lecture_duration(d: Path) -> float:
-    info_file = next(iter(d.glob("*.info.json")), None)
-    if info_file:
-        try:
-            return float(json.loads(info_file.read_text()).get("duration") or 0)
-        except (json.JSONDecodeError, TypeError, ValueError):
-            pass
-    return 0.0
+    try:
+        return float(lecture_info(d).get("duration") or 0)
+    except (TypeError, ValueError):   # a duration that isn't a number
+        return 0.0
 
 
 # Words whose absence flips a sentence. They must be matched outright, never
@@ -2750,7 +2740,7 @@ def lecture_payload(vid: str) -> dict | None:
             return default
 
     video = find_video(d)
-    info = load(next(iter(p.name for p in d.glob("*.info.json")), "_"), {})
+    info = lecture_info(d)
     slides = load("slides.json", [])
     for s in slides:  # make paths servable
         s["url"] = f"/media?path={quote(str((d / s['file']).relative_to(LIBRARY)))}"

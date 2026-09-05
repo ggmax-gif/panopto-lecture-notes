@@ -364,7 +364,7 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-94 tests, under a second, no network. They need neither ffmpeg, yt-dlp, Vision
+105 tests, under a second, no network. They need neither ffmpeg, yt-dlp, Vision
 nor a model server: OCR is stubbed, `subprocess.run` is faked, and every
 lecture, slide and vault is synthesised in a temp directory — `library/` is
 gitignored and does not exist on a fresh clone, so it could not be a fixture
@@ -385,6 +385,7 @@ commit it descends from, and asserts the behaviour that commit bought:
 | `test_context_budget.py` | A surviving slide is intact, and a negative budget returns nothing rather than everything |
 | `test_auth_preflight.py` | Exit 0 with an empty listing is a failure, not a success |
 | `test_urls_and_verify.py` | Folder links canonicalise, and `verify`'s old false positives stay fixed |
+| `test_lecture_info.py` | A missing, corrupt or unreadable metadata sidecar degrades to no-metadata rather than taking the command down |
 
 The suite was checked by reverting each fix in a scratch copy and confirming
 the matching test failed — seven mutations, seven caught. A test written after

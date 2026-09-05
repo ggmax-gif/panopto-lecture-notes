@@ -8,6 +8,8 @@ Read this before changing anything. One 3,504-line module, `lecturescrape.py`, w
 
 **This tool deletes data.** `prune` deletes recordings, `process` drops frames it judges blank, `export` supersedes notes in a real Obsidian vault. Most of the commits in this repo are post-mortems of it destroying or falsifying something. Read the log before changing a guard — `git log` here is the incident register, and the messages carry the reproductions.
 
+A second rule, learned the same way: **when two places answer the same question, they drift.** `is_pruned` and `slides_extracted` did; so did six copies of the `*.info.json` parse, which disagreed on what to catch. One question, one predicate.
+
 The rule the history has converged on: **when a guard misjudges, move the file, don't unlink it.** Blank frames go to `slides/dropped/`, superseded notes go to the vault's `.trash/`. Neither is deleted, because no test can distinguish a generated note someone annotated from the original it was copied from.
 
 ## The tests are the guard on all of that
@@ -16,7 +18,7 @@ The rule the history has converged on: **when a guard misjudges, move the file, 
 pip install -r requirements-dev.txt && pytest
 ```
 
-94 tests, under a second, no network, no ffmpeg, no Vision, no model server.
+105 tests, under a second, no network, no ffmpeg, no Vision, no model server.
 Every lecture, slide and vault is synthesised under `tmp_path` — `library/` is
 gitignored and absent from a fresh clone, so no test can touch a real
 recording while proving the code doesn't.
