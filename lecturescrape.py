@@ -2976,7 +2976,12 @@ class _Tee:
 
 
 def cmd_serve(cfg: Config, args) -> None:
-    """Local daemon the Chrome extension talks to. Bound to loopback only."""
+    """Local daemon behind the viewer. Bound to loopback only, and it answers
+    no cross-origin request at all: the viewer is served from this same origin
+    and needs none. The wildcard that used to be here let any page you happened
+    to be visiting read your whole library — lecture list, transcripts, notes —
+    because the daemon listens on localhost and the browser will make that
+    request on the page's behalf. Don't reintroduce it."""
     import contextlib
     import mimetypes
     import queue
@@ -3069,38 +3074,13 @@ def cmd_serve(cfg: Config, args) -> None:
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
-        def _cors(self):
-            """Only the Chrome extension may reach this cross-origin.
-
-            The wildcard this used to send let ANY page you happened to be
-            visiting read your whole library — lecture list, transcripts and
-            notes — because the daemon listens on localhost and the browser
-            will happily make that request on the page's behalf. The viewer is
-            served from this same origin and needs no CORS at all.
-            """
-            origin = self.headers.get("Origin", "")
-            if not origin.startswith("chrome-extension://"):
-                return
-            self.send_header("Access-Control-Allow-Origin", origin)
-            self.send_header("Vary", "Origin")
-            self.send_header("Access-Control-Allow-Headers", "content-type")
-            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-            self.send_header("Access-Control-Allow-Private-Network", "true")
-
         def _send(self, code: int, payload: dict):
             body = json.dumps(payload).encode()
             self.send_response(code)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
-            self._cors()
             self.end_headers()
             self.wfile.write(body)
-
-        def do_OPTIONS(self):
-            self.send_response(204)
-            self._cors()
-            self.send_header("Content-Length", "0")
-            self.end_headers()
 
         # -------------------------------------------------- static + media
 
@@ -3108,7 +3088,6 @@ def cmd_serve(cfg: Config, args) -> None:
             self.send_response(code)
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(body)))
-            self._cors()
             self.end_headers()
             self.wfile.write(body)
 
@@ -3282,7 +3261,6 @@ def cmd_serve(cfg: Config, args) -> None:
     server = ThreadingHTTPServer(("127.0.0.1", args.port or cfg.port), Handler)
     print(f"lecturescrape daemon on http://127.0.0.1:{server.server_port}")
     print(f"  analysis -> {cfg.model} at {cfg.endpoint}")
-    print("  load extension/ in chrome://extensions (Developer mode > Load unpacked)")
     print("  ctrl-c to stop")
     try:
         server.serve_forever()
@@ -3429,7 +3407,7 @@ def main() -> None:
     s.add_argument("--hour", type=int, default=8, help="hour of day, 24h")
     s.set_defaults(func=cmd_schedule)
 
-    s = sub.add_parser("serve", help="run the daemon the Chrome extension uses")
+    s = sub.add_parser("serve", help="run the viewer and its local daemon")
     s.add_argument("--port", type=int, help="override the port in config.yaml")
     s.set_defaults(func=cmd_serve)
 

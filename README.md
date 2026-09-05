@@ -141,13 +141,12 @@ The app opens it for you. To run it from a terminal instead:
 ./lecturescrape.py serve
 ```
 
-Then open <http://127.0.0.1:8420>. Same daemon that backs the Chrome extension —
-no second process.
+Then open <http://127.0.0.1:8420>.
 
 ### Adding lectures
 
 Paste a Recap link into the box at the top left and hit **Add**. This is the
-easiest way in — no config file, no extension, no terminal.
+easiest way in — no config file, no terminal.
 
 It takes anything Exeter's Recap produces:
 
@@ -323,33 +322,20 @@ that shape forced:
   near-duplicate notes each holding a third of the links. The longest spelling
   seen becomes the display name.
 
-## The Chrome extension
+## The viewer's daemon
 
-Rather than remembering folder URLs, you can just click a button on the lecture
-you're already watching.
-
-Start the daemon once (leave it running in a terminal):
+`serve` runs the viewer and the local daemon behind it:
 
 ```bash
 ./lecturescrape.py serve
 ```
 
-Load the extension: `chrome://extensions` → Developer mode → **Load unpacked** →
-pick the `extension/` folder.
-
-Now every Panopto viewer page gets two buttons, bottom right:
-
-- **Notes** — downloads, transcribes, extracts slides, sends the transcript off
-  for analysis, shows the notes in a side panel
-- **+slides** — same but sends `bundle.md`, which includes the slide images.
-  Only worth it on a vision model.
-
-Progress streams into the panel as it goes. Everything is cached, so clicking
-Notes again on a lecture you've already done returns instantly.
-
-The daemon binds to `127.0.0.1` only — nothing is exposed off the machine. The
-extension talks to it from the service worker rather than the page, because
-Chrome blocks page-level requests to localhost from an https origin.
+It binds to `127.0.0.1` only — nothing is exposed off the machine — and it
+answers no cross-origin request at all. The viewer is served from the same
+origin and needs none. There was a Chrome extension that put buttons on the
+Panopto page and reached the daemon from its service worker; it has been
+removed, and with it the cross-origin allowance it required. Paste the lecture
+link into the viewer instead.
 
 The module name is guessed from the Panopto title (it picks out codes like
 `BEF2014`), so lectures file themselves into the right folder.
@@ -364,7 +350,7 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-105 tests, under a second, no network. They need neither ffmpeg, yt-dlp, Vision
+107 tests, under a second, no network. They need neither ffmpeg, yt-dlp, Vision
 nor a model server: OCR is stubbed, `subprocess.run` is faked, and every
 lecture, slide and vault is synthesised in a temp directory — `library/` is
 gitignored and does not exist on a fresh clone, so it could not be a fixture
@@ -386,6 +372,7 @@ commit it descends from, and asserts the behaviour that commit bought:
 | `test_auth_preflight.py` | Exit 0 with an empty listing is a failure, not a success |
 | `test_urls_and_verify.py` | Folder links canonicalise, and `verify`'s old false positives stay fixed |
 | `test_lecture_info.py` | A missing, corrupt or unreadable metadata sidecar degrades to no-metadata rather than taking the command down |
+| `test_daemon_origin.py` | The daemon answers no cross-origin request — a canary on the header that once leaked the library |
 
 The suite was checked by reverting each fix in a scratch copy and confirming
 the matching test failed — seven mutations, seven caught. A test written after
@@ -429,7 +416,7 @@ Then:
 ./lecturescrape.py status            # what's done
 ```
 
-Use this for bulk work — a whole term in one go — and the extension for the
+Use this for bulk work — a whole term in one go — and the viewer for the
 lecture in front of you. They share the same library and download archive, so
 they never duplicate effort.
 

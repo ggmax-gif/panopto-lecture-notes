@@ -1,6 +1,6 @@
 # lecturescrape — orientation
 
-Read this before changing anything. One 3,504-line module, `lecturescrape.py`, with eleven subcommands: `sync process prune analyse export concepts verify autosync schedule serve status`. Plus a Chrome extension, a web UI, and `build_app.py` for the packaged Mac app.
+Read this before changing anything. One 3,422-line module, `lecturescrape.py`, with eleven subcommands: `sync process prune analyse export concepts verify autosync schedule serve status`. Plus a web UI and `build_app.py` for the packaged Mac app.
 
 **What this is.** Panopto recording → notes covering *what the lecturer said that the slides don't*. The output is a **delta, not a summary**: timestamped transcript plus slide text from OCR, interleaved, and a model asked for the difference. Every claim carries a timestamp that deep-links back into the recording. Runs locally except the optional hosted-model step.
 
@@ -18,7 +18,7 @@ The rule the history has converged on: **when a guard misjudges, move the file, 
 pip install -r requirements-dev.txt && pytest
 ```
 
-105 tests, under a second, no network, no ffmpeg, no Vision, no model server.
+107 tests, under a second, no network, no ffmpeg, no Vision, no model server.
 Every lecture, slide and vault is synthesised under `tmp_path` — `library/` is
 gitignored and absent from a fresh clone, so no test can touch a real
 recording while proving the code doesn't.
@@ -65,4 +65,4 @@ The expensive failures here were never crashes. They were success messages.
 
 Default is `qwen3.8:27b-mlx`, chosen by measurement rather than assumption: against nemotron on the same 80k bundle it was 2.2× faster for 1.9× the notes, with four times the figures cited and none unsupported. It also reads slide images, so `--vision` no longer needs a second model. Note the default answers on the reasoning channel — the notes are kept from there rather than discarded.
 
-`serve` runs the daemon the Chrome extension talks to. It once handed the library to every site you visited; keep the origin check.
+`serve` runs the viewer's daemon. It once handed the library to every site you visited via a wildcard CORS header; the Chrome extension that needed cross-origin access is gone and so is the header. It answers no cross-origin request now — don't reintroduce one.
