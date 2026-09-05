@@ -357,6 +357,39 @@ The module name is guessed from the Panopto title (it picks out codes like
 The daemon reads `config.yaml` once at startup — **restart it after editing the
 config**, or you'll keep getting the old behaviour.
 
+## Tests
+
+```bash
+pip install -r requirements-dev.txt
+pytest
+```
+
+94 tests, under a second, no network. They need neither ffmpeg, yt-dlp, Vision
+nor a model server: OCR is stubbed, `subprocess.run` is faked, and every
+lecture, slide and vault is synthesised in a temp directory — `library/` is
+gitignored and does not exist on a fresh clone, so it could not be a fixture
+even if that were wise.
+
+What they pin is narrow and deliberate. This tool deletes recordings, drops
+frames it judges blank, and supersedes notes in a real Obsidian vault, and
+almost every commit in `git log` is a post-mortem of one of those going wrong.
+So the suite is the incident register made executable — each test names the
+commit it descends from, and asserts the behaviour that commit bought:
+
+| File | What it holds still |
+| --- | --- |
+| `test_export_supersede.py` | A note this exporter did not write is never removed, and one it did write goes to `.trash/` rather than being unlinked |
+| `test_slides_blank.py` | A frame is only judged once OCR has testified, never judged at all without it, and set aside rather than deleted |
+| `test_prune_guards.py` | The recording goes only when the slides are demonstrably out of it |
+| `test_timestamps.py` | Both forms the model writes become links, exactly once, and links already there are left alone |
+| `test_context_budget.py` | A surviving slide is intact, and a negative budget returns nothing rather than everything |
+| `test_auth_preflight.py` | Exit 0 with an empty listing is a failure, not a success |
+| `test_urls_and_verify.py` | Folder links canonicalise, and `verify`'s old false positives stay fixed |
+
+The suite was checked by reverting each fix in a scratch copy and confirming
+the matching test failed — seven mutations, seven caught. A test written after
+the fix proves nothing until it has been shown to fail without it.
+
 ## Authentication
 
 Recap sits behind Exeter SSO, so `yt-dlp` borrows a session cookie from Chrome.
