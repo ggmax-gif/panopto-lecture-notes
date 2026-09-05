@@ -734,15 +734,16 @@ plus ~4,886 emitted, over by 629 tokens, with the start of the transcript fallin
 out silently.
 
 **Gemini, metered.** A Google AI Pro plan is *not* API access — the API bills
-per token through a separate account. Either set `GEMINI_API_KEY` and point the
-`openai` backend at Google's OpenAI-compatible endpoint, or use
-`backend: "gemini-cli"`, which shells out to Gemini CLI.
+per token through a separate account. Set `GEMINI_API_KEY` and point the
+`openai` backend at Google's OpenAI-compatible endpoint.
 
-Both bill per token. As of August 2026 Google withdrew Gemini Code Assist for
-individuals from third-party clients, so the CLI can no longer spend an AI Pro
-subscription — it reports *"This client is no longer supported for Gemini Code
-Assist for individuals"* and points you at Antigravity. Which, as it turns out,
-is scriptable.
+There used to be a second way in, `backend: "gemini-cli"`, which shelled out to
+Gemini CLI. It is gone. In August 2026 Google withdrew Gemini Code Assist for
+individuals from third-party clients — the CLI reports *"This client is no
+longer supported for Gemini Code Assist for individuals"* and points you at
+Antigravity — so it could no longer spend a subscription, and what remained was
+a metered path billing exactly like the `openai` one above. Two code paths, one
+behaviour, so it went. Antigravity, as it turns out, is scriptable.
 
 **Gemini, on the subscription.** Antigravity ships a CLI, `agy`, and its print
 mode answers one prompt and exits — so it drops straight into the backend slot

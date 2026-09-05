@@ -1301,9 +1301,8 @@ def analyse_batch(cfg: Config, args) -> None:
               f"{out_name}. Use --redo to rewrite them.")
         return
 
-    where = {"antigravity": "via agy" + (", reading the slides" if cfg.vision else ""),
-             "gemini-cli": "via the gemini CLI"}.get(cfg.backend,
-                                                    f"at {cfg.endpoint}")
+    where = ("via agy" + (", reading the slides" if cfg.vision else "")
+             if cfg.backend == "antigravity" else f"at {cfg.endpoint}")
     print(f"{len(todo)} of {len(dirs)} lecture(s) need notes "
           f"({cfg.model} {where})\n")
 
@@ -1367,53 +1366,6 @@ def analyse_batch(cfg: Config, args) -> None:
     print(f"\n{done} written, {len(failed)} failed")
     for f in failed:
         print(f"  failed: {f}")
-
-
-def gemini_cli_analysis(cfg: Config, d: Path, body: str, prompt: str) -> str:
-    """Run the notes through Gemini CLI.
-
-    This used to be the way to spend an AI Pro subscription rather than metered
-    credits, via Code Assist auth. Google withdrew that from third-party clients
-    in August 2026, so it now needs GEMINI_API_KEY and bills per token like the
-    API. Antigravity against library/ is the remaining subscription route.
-    """
-    if not have("gemini"):
-        raise RuntimeError("gemini CLI not found — npm install -g @google/gemini-cli")
-
-    cmd = ["gemini", "-p", prompt, "--skip-trust", "--approval-mode", "plan"]
-    if cfg.model:
-        cmd[1:1] = ["-m", cfg.model]
-
-    env = dict(os.environ)
-    if not env.get("GEMINI_API_KEY"):
-        env.setdefault("GOOGLE_GENAI_USE_GCA", "true")
-
-    print(f"asking {cfg.model or 'gemini'} via the CLI (metered, needs an API key) ...")
-    proc = subprocess.run(cmd, input=body, capture_output=True,
-                          text=True, cwd=str(d), env=env)
-
-    if proc.returncode != 0:
-        err = strip_cli_noise(f"{proc.stderr}\n{proc.stdout}")
-        if "no longer supported" in err or "migrate to the Antigravity" in err:
-            raise RuntimeError(
-                "Google has withdrawn Gemini Code Assist for individuals from "
-                "this client, so the CLI can no longer spend an AI Pro "
-                "subscription. Either set GEMINI_API_KEY for metered API "
-                "billing, or use Antigravity: open library/ as a workspace and "
-                "let its agent write the notes (see AGENTS.md there)."
-            )
-        needs_login = ("Auth method" in err or "GOOGLE_GENAI_USE_GCA" in err
-                       or "Authentication cancelled" in err
-                       or "FatalCancellationError" in err)
-        if needs_login:
-            raise RuntimeError(
-                "Gemini CLI isn't signed in. Run `gemini` once in a terminal to "
-                "authenticate. Note that subscription sign-in no longer works "
-                "here — this path now needs GEMINI_API_KEY and bills per token."
-            )
-        raise RuntimeError(f"gemini CLI failed: {err[:400]}")
-
-    return strip_cli_noise(proc.stdout)
 
 
 # agy is an agent sitting in a workspace, not a completion endpoint. Left to
@@ -1582,8 +1534,8 @@ def antigravity_analysis(cfg: Config, d: Path, body: str, prompt: str) -> str:
     stopped being able to do. `agy -p` answers one prompt and exits, so it drops
     into the same slot as any other backend.
 
-    It ignores stdin, unlike the gemini client, so the bundle rides in the
-    prompt argument instead of being piped.
+    It ignores stdin, so the bundle rides in the prompt argument rather than
+    being piped.
     """
     if not have("agy"):
         raise RuntimeError(
@@ -1862,10 +1814,8 @@ def run_analysis(cfg: Config, d: Path, use_slides: bool = False,
                 f"> shown unless you can see the slides around that timestamp.\n\n"
                 + body)
 
-    if cfg.backend in ("gemini-cli", "antigravity"):
-        run = (antigravity_analysis if cfg.backend == "antigravity"
-               else gemini_cli_analysis)
-        notes = run(cfg, d, body, prompt)
+    if cfg.backend == "antigravity":
+        notes = antigravity_analysis(cfg, d, body, prompt)
         (d / out_name).write_text(notes + "\n")
         return notes
 
@@ -3437,7 +3387,7 @@ def main() -> None:
                    help="use bundle.md (with slide refs) instead of transcript.md")
     s.add_argument("--prompt", help="path to a custom prompt file")
     s.add_argument("--model", help="override the model in config.yaml")
-    s.add_argument("--backend", choices=["openai", "gemini-cli", "antigravity"],
+    s.add_argument("--backend", choices=["openai", "antigravity"],
                    help="override the backend in config.yaml")
     s.add_argument("--jobs", type=int, default=1, metavar="N",
                    help="lectures to analyse at once on a batch run; worth "

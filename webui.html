@@ -202,7 +202,7 @@ const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;
 
 async function loadLibrary() {
   const h = await api('/health');
-  $('#backend').textContent = h.backend === 'gemini-cli' ? 'gemini' : (h.model || '');
+  $('#backend').textContent = h.model || '';
 
   const { modules } = await api('/api/library');
   const tree = $('#tree');
