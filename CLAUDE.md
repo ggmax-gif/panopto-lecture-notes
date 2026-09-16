@@ -66,3 +66,22 @@ The expensive failures here were never crashes. They were success messages.
 Default is `qwen3.8:27b-mlx`, chosen by measurement rather than assumption: against nemotron on the same 80k bundle it was 2.2× faster for 1.9× the notes, with four times the figures cited and none unsupported. It also reads slide images, so `--vision` no longer needs a second model. Note the default answers on the reasoning channel — the notes are kept from there rather than discarded.
 
 `serve` runs the viewer's daemon. It once handed the library to every site you visited via a wildcard CORS header; the Chrome extension that needed cross-origin access is gone and so is the header. It answers no cross-origin request now — don't reintroduce one.
+
+## Commit messages
+
+Say what changed in the subject line. Seven of the nine most recent subjects
+stage a point instead. "Six copies of one question, disagreeing about the
+answer" was a metadata parse consolidated from six call sites into one, and
+the subject never says so; "Parse *.info.json in one place instead of six"
+does.
+
+Three habits recur. Measured over 2,313 words of this log: 24 em dashes,
+11 "rather than" / "instead of" contrasts, and most paragraphs ending on a
+short line that restates the paragraph above it ("Two code paths, one
+behaviour."). Drop all three and the facts survive unchanged, about 10%
+shorter. The `humanizer` plugin runs the full pass if you want it.
+
+The existing history stays as written. Ten commit hashes are cited in test
+docstrings, in this file and in the README, so rebasing to fix prose would
+invalidate every citation and need a force-push over main. The prose is not
+worth that; the citations are what make the tests legible.
