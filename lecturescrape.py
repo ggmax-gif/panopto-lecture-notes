@@ -262,6 +262,35 @@ AUTH_HINT = (
 )
 
 
+# Where each Chromium browser keeps its profile, under Application Support.
+BROWSER_DATA = {
+    "chrome": "Google/Chrome", "brave": "BraveSoftware/Brave-Browser",
+    "edge": "Microsoft Edge", "chromium": "Chromium", "vivaldi": "Vivaldi",
+}
+
+
+def browser_data_blocked(browser: str) -> bool:
+    """Whether macOS privacy protection stops this process reading the
+    browser's profile.
+
+    macOS 27 protects browser data folders the way it already protected
+    Safari's. yt-dlp then reports "could not find chrome cookies database",
+    which reads like a missing browser or an expired login, and logging in
+    again changes nothing. Listing the folder tells the cases apart: EPERM is
+    the privacy block, a missing folder is a wrong browser name.
+    """
+    sub = BROWSER_DATA.get(browser.split(":")[0].lower())
+    if not sub:
+        return False
+    try:
+        os.listdir(Path.home() / "Library" / "Application Support" / sub)
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return False
+
+
 def preflight_auth(cfg: Config, url: str) -> None:
     """Check the session once before a batch.
 
@@ -303,9 +332,18 @@ def preflight_auth(cfg: Config, url: str) -> None:
             "firefox, opera, safari, vivaldi, whale."
         )
     if "could not find" in err.lower() and "cookies" in err.lower():
+        if browser_data_blocked(cfg.browser):
+            raise RuntimeError(
+                f"macOS is blocking access to {cfg.browser}'s data folder, so "
+                "yt-dlp cannot read the Recap cookie. Logging in again will "
+                "not help. Give the app you are running this from Full Disk "
+                "Access (System Settings > Privacy & Security), then quit and "
+                "reopen it."
+            )
         raise RuntimeError(
-            f"Couldn't read cookies from {cfg.browser}. Check the browser name "
-            "in config.yaml, and that you're logged into Recap in it."
+            f"Couldn't find {cfg.browser}'s cookies. Check the browser name "
+            "in config.yaml, and that you have logged into Recap in that "
+            "browser at least once."
         )
     # Anything else is the caller's problem to report in context.
 
@@ -378,12 +416,17 @@ def fetch_url(cfg: Config, url: str, module: str = "Unsorted") -> Path:
         if existing:
             print(f"upgrading transcript-only lecture: {existing.name[:52]}")
 
+    # The viewer's Add and "Get video & slides" buttons come through here.
+    # Without this check every failure was reported as an expired session,
+    # including the macOS privacy block that no login can fix.
+    preflight_auth(cfg, url)
+
     print("downloading...")
     rc = subprocess.call(ytdlp_cmd(cfg, module, url) + [url])
     if rc != 0:
         raise RuntimeError(
-            "yt-dlp failed — usually an expired session. Log into Recap in "
-            f"{cfg.browser} and try again."
+            "yt-dlp exited with an error after the session check passed. "
+            "The lines above it in the log say what went wrong."
         )
 
     d = find_by_id(vid) if vid else None

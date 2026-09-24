@@ -350,7 +350,7 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-121 tests, under a second, no network. They need neither ffmpeg, yt-dlp, Vision
+127 tests, under a second, no network. They need neither ffmpeg, yt-dlp, Vision
 nor a model server: OCR is stubbed, `subprocess.run` is faked, and every
 lecture, slide and vault is synthesised in a temp directory — `library/` is
 gitignored and does not exist on a fresh clone, so it could not be a fixture
@@ -395,7 +395,9 @@ single lecture fails loudly: *"This video is only available for registered
 users."* A folder doesn't fail at all — Panopto answers an unauthenticated
 folder listing with an empty list, so `yt-dlp` exits successfully having found
 nothing, and an unguarded sync reports success having downloaded no lectures.
-`sync` and `autosync` check for both before starting and say which one they hit.
+`sync`, `autosync` and the viewer's Add button check for both before starting and say which one they hit.
+
+**macOS 27 blocks the cookie file itself.** It protects browser data folders the way it already protected Safari's, and yt-dlp then reports `could not find chrome cookies database` even while you are logged in. Logging in again changes nothing. Give Full Disk Access (System Settings > Privacy & Security) to whatever runs the download: `Lecture Notes.app` for the viewer, your terminal for the command line. The preflight check names this case when it sees it.
 Either way: log back into Recap and re-run.
 
 ## Use

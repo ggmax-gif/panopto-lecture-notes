@@ -76,10 +76,49 @@ def test_a_mistyped_browser_is_named(ls, cfg, fake_ytdlp):
         ls.preflight_auth(cfg(browser="chrom"), FOLDER)
 
 
-def test_unreadable_cookies_are_named(ls, cfg, fake_ytdlp):
-    fake_ytdlp(returncode=1, stderr="ERROR: could not find chrome cookies database")
-    with pytest.raises(RuntimeError, match="[Cc]ookies"):
+COOKIES_MISSING = ('ERROR: could not find chrome cookies database in '
+                   '"/Users/x/Library/Application Support/Google/Chrome"')
+
+
+def test_a_missing_cookie_database_points_at_the_browser_name(ls, cfg, fake_ytdlp, monkeypatch):
+    """Pinned, not read from this machine: whether the folder is blocked
+    depends on the Mac running the tests."""
+    monkeypatch.setattr(ls, "browser_data_blocked", lambda browser: False)
+    fake_ytdlp(returncode=1, stderr=COOKIES_MISSING)
+    with pytest.raises(RuntimeError, match="browser name"):
         ls.preflight_auth(cfg(), FOLDER)
+
+
+def test_the_macos_privacy_block_is_named_and_login_is_ruled_out(ls, cfg, fake_ytdlp, monkeypatch):
+    """Incident: on macOS 27 the app said "usually an expired session. Log
+    into Recap" while the user was logged in. yt-dlp's error is identical for
+    a blocked folder and a missing one, so the folder is listed to tell them
+    apart, and the message says a login will not help."""
+    monkeypatch.setattr(ls, "browser_data_blocked", lambda browser: True)
+    fake_ytdlp(returncode=1, stderr=COOKIES_MISSING)
+    with pytest.raises(RuntimeError) as e:
+        ls.preflight_auth(cfg(), FOLDER)
+    assert "Full Disk Access" in str(e.value)
+    assert "will not help" in str(e.value)
+
+
+def test_browser_data_blocked_reads_eperm_as_the_privacy_block(ls, monkeypatch):
+    def refuse(path):
+        raise PermissionError(1, "Operation not permitted")
+    monkeypatch.setattr(ls.os, "listdir", refuse)
+    assert ls.browser_data_blocked("chrome")
+    assert ls.browser_data_blocked("chrome:Profile 1")
+
+
+def test_browser_data_blocked_treats_a_missing_folder_as_not_blocked(ls, monkeypatch):
+    def missing(path):
+        raise FileNotFoundError(2, "No such file or directory")
+    monkeypatch.setattr(ls.os, "listdir", missing)
+    assert not ls.browser_data_blocked("chrome")
+
+
+def test_browser_data_blocked_ignores_browsers_it_does_not_map(ls):
+    assert not ls.browser_data_blocked("firefox")
 
 
 def test_an_unrecognised_error_is_left_to_the_caller(ls, cfg, fake_ytdlp):
@@ -87,3 +126,31 @@ def test_an_unrecognised_error_is_left_to_the_caller(ls, cfg, fake_ytdlp):
     the caller's to report in context."""
     fake_ytdlp(returncode=1, stderr="ERROR: unable to download: connection reset")
     assert ls.preflight_auth(cfg(), FOLDER) is None
+
+
+def test_the_viewers_download_path_checks_the_session_first(ls, cfg, fake_ytdlp, monkeypatch):
+    """fetch_url backs the viewer's Add and "Get video & slides" buttons. It
+    skipped preflight_auth, so every failure there read "usually an expired
+    session" whatever yt-dlp had actually said."""
+    monkeypatch.setattr(ls, "browser_data_blocked", lambda browser: True)
+    monkeypatch.setattr(ls, "find_by_id", lambda vid: None)
+    downloads = []
+    monkeypatch.setattr(subprocess, "call", lambda *a, **k: downloads.append(a) or 0)
+    fake_ytdlp(returncode=1, stderr=COOKIES_MISSING)
+
+    lecture = ("https://recapexeter.cloud.panopto.eu/Panopto/Pages/Viewer.aspx"
+               "?id=dc340e97-6b24-4109-8030-b41400e842da")
+    with pytest.raises(RuntimeError, match="Full Disk Access"):
+        ls.fetch_url(cfg(), lecture)
+    assert downloads == [], "nothing should be downloaded after a failed check"
+
+
+def test_a_download_failure_does_not_claim_a_cause_it_cannot_know(ls, cfg, fake_ytdlp, monkeypatch):
+    monkeypatch.setattr(ls, "find_by_id", lambda vid: None)
+    monkeypatch.setattr(subprocess, "call", lambda *a, **k: 1)
+    fake_ytdlp(stdout="dc340e97-6b24-4109-8030-b41400e842da\n")  # session fine
+    lecture = ("https://recapexeter.cloud.panopto.eu/Panopto/Pages/Viewer.aspx"
+               "?id=dc340e97-6b24-4109-8030-b41400e842da")
+    with pytest.raises(RuntimeError) as e:
+        ls.fetch_url(cfg(), lecture)
+    assert "expired" not in str(e.value)

@@ -18,7 +18,7 @@ The rule the history has converged on: **when a guard misjudges, move the file, 
 pip install -r requirements-dev.txt && pytest
 ```
 
-121 tests, under a second, no network, no ffmpeg, no Vision, no model server.
+127 tests, under a second, no network, no ffmpeg, no Vision, no model server.
 Every lecture, slide and vault is synthesised under `tmp_path` — `library/` is
 gitignored and absent from a fresh clone, so no test can touch a real
 recording while proving the code doesn't.
@@ -44,7 +44,8 @@ shown to fail without it.
 The expensive failures here were never crashes. They were success messages.
 
 - **Panopto's folder API answers an unauthenticated caller with an empty list**, and yt-dlp exits 0 having listed nothing. `sync` printed "sync complete" and the weekly autosync would have done nothing, every week, all term, without ever saying so. **Exit 0 with an empty listing is a failure.** Keep it that way.
-- **`cmd_sync` must call `preflight_auth`.** Every other path did; the command you actually type went straight to `subprocess.call`, so an expired cookie surfaced as a bare exit code.
+- **Every path that runs yt-dlp must call `preflight_auth` first.** `cmd_sync` skipped it, so an expired cookie surfaced as a bare exit code. `fetch_url`, behind the viewer's Add button, skipped it too and reported every failure as "usually an expired session", including the macOS 27 block on browser data that no login fixes.
+- **On macOS 27 yt-dlp says "could not find chrome cookies database" for two different causes**: a wrong browser name, and the OS refusing to let the process read the browser's folder. `browser_data_blocked` lists the folder to tell them apart (EPERM is the block). The fix for the block is Full Disk Access, not logging in.
 - **Context budget arithmetic can go negative** when Ollama serves its 2,048 default. `stripped[:budget*3]` with a negative bound returned the *last* 71k characters — nearly the whole lecture pushed into a window a tenth its size, which is the exact silent eviction this code exists to prevent. Slice is clamped, and it refuses outright below `MIN_CONTEXT_BUDGET`.
 - **Ask the server what window it serves; don't trust config.** The configured number and the served number were not the same.
 - **The DELTA→SUMMARY fallback strips slide text from the pristine bundle**, not from the already-trimmed body. Refitting the trimmed body left the omission note empty, so the model was told nothing was missing while the summary prompt opened with "No slides are available."
