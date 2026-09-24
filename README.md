@@ -350,7 +350,7 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-107 tests, under a second, no network. They need neither ffmpeg, yt-dlp, Vision
+121 tests, under a second, no network. They need neither ffmpeg, yt-dlp, Vision
 nor a model server: OCR is stubbed, `subprocess.run` is faked, and every
 lecture, slide and vault is synthesised in a temp directory — `library/` is
 gitignored and does not exist on a fresh clone, so it could not be a fixture
@@ -373,6 +373,7 @@ commit it descends from, and asserts the behaviour that commit bought:
 | `test_urls_and_verify.py` | Folder links canonicalise, and `verify`'s old false positives stay fixed |
 | `test_lecture_info.py` | A missing, corrupt or unreadable metadata sidecar degrades to no-metadata rather than taking the command down |
 | `test_daemon_origin.py` | The daemon answers no cross-origin request — a canary on the header that once leaked the library |
+| `test_claude_backend.py` | The Claude backend sends every slide, opts into refusal fallbacks, and writes nothing for a refused or truncated reply; one test checks the real SDK's request on a local server |
 
 The suite was checked by reverting each fix in a scratch copy and confirming
 the matching test failed — seven mutations, seven caught. A test written after
@@ -761,6 +762,34 @@ lecture is already inline and that the answer comes back as the reply — a cust
 Measured at 45 seconds for a two-hour lecture on `gemini-3.6-flash-low`, most of
 which is startup.
 
+**Claude API.** Set a key from console.anthropic.com and point the config at a
+Claude model:
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+```
+
+```yaml
+backend: "claude"
+model: "claude-opus-5"
+effort: "high"
+```
+
+The window is 1M tokens, so every lecture goes through whole: nothing is
+trimmed, and the delta prompt sees every slide rather than the 20 of 29 that
+fit a 32k local window on BEF2014. Each request streams with adaptive
+thinking, and on the Opus 5 and Fable 5 families it opts into server-side
+refusal fallbacks, so a lecture a safety classifier declines is retried on
+another model instead of failing. A lecture that is refused anyway, or whose
+reply runs out of `max_tokens`, writes nothing rather than a partial note.
+`--vision` sends the slide images with the text.
+
+It bills per token and prints the cost after each lecture. Estimated from this
+library's bundles (12k to 132k characters, mean 70k) at list price, a lecture
+costs roughly $0.40 on `claude-opus-5` and $0.15 on `claude-sonnet-5`; output
+length and thinking vary, so the printed figure is the one to trust. Unlike
+the local default, this sends the transcript and slide text to Anthropic.
+
 **Comparing backends.** `--model`, `--backend` and `--label` override the config
 for one run, so you can put two models side by side on the same lecture without
 overwriting the result:
@@ -768,6 +797,7 @@ overwriting the result:
 ```bash
 ./lecturescrape.py analyse "BEF2014" --slides --model "gemma4:e4b-mlx" --label "e4b"
 ./lecturescrape.py analyse "BEF2014" --slides --backend antigravity --model "gemini-3.1-pro-high" --label "pro"
+./lecturescrape.py analyse "BEF2014" --slides --backend claude --model "claude-opus-5" --label "opus"
 ```
 
 That writes `notes-e4b.md` and `notes-pro.md` alongside each other. Worth doing

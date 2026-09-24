@@ -18,7 +18,7 @@ The rule the history has converged on: **when a guard misjudges, move the file, 
 pip install -r requirements-dev.txt && pytest
 ```
 
-107 tests, under a second, no network, no ffmpeg, no Vision, no model server.
+121 tests, under a second, no network, no ffmpeg, no Vision, no model server.
 Every lecture, slide and vault is synthesised under `tmp_path` — `library/` is
 gitignored and absent from a fresh clone, so no test can touch a real
 recording while proving the code doesn't.
@@ -64,6 +64,8 @@ The expensive failures here were never crashes. They were success messages.
 ## Models and the daemon
 
 Default is `qwen3.8:27b-mlx`, chosen by measurement rather than assumption: against nemotron on the same 80k bundle it was 2.2× faster for 1.9× the notes, with four times the figures cited and none unsupported. It also reads slide images, so `--vision` no longer needs a second model. Note the default answers on the reasoning channel — the notes are kept from there rather than discarded.
+
+`backend: claude` sends each lecture to the Claude API in one streamed request. Its 1M window means `fit_to_context` never trims there, so the slide-dropping rules above only bite on the local backend. A refused reply or one that hits `max_tokens` writes no notes: a truncated note reads as complete.
 
 `serve` runs the viewer's daemon. It once handed the library to every site you visited via a wildcard CORS header; the Chrome extension that needed cross-origin access is gone and so is the header. It answers no cross-origin request now — don't reintroduce one.
 

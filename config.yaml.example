@@ -79,9 +79,19 @@ keep_video: false
 #                        still spend the subscription. Needs `agy` on PATH and
 #                        signed in, and a model from `agy models` rather than a
 #                        local tag. endpoint and max_context_tokens are ignored.
+#   backend: claude      the Claude API. Needs ANTHROPIC_API_KEY and a Claude
+#                        model id (claude-opus-5, claude-sonnet-5), and bills
+#                        per token. Its 1M-token window takes every lecture
+#                        whole, so no slides are dropped. Sends the transcript
+#                        and slide text to Anthropic. endpoint and
+#                        max_context_tokens are ignored.
 #
 # Ollama is already running locally and needs no key, so it's the default.
 backend: "openai"
+
+# claude only: how hard the model thinks before writing. high is the default;
+# medium and low are cheaper and worth trying on lectures that are mostly prose.
+effort: "high"
 
 # antigravity only: let the model open the slide JPEGs instead of reading only
 # the text OCR pulled off them. OCR is what flattens an equation or a table into

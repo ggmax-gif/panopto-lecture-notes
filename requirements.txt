@@ -1,3 +1,4 @@
 pyyaml          # config
 openai          # `analyse` — speaks to local servers and Gemini alike
+anthropic==1.8.0  # `analyse --backend claude`; pinned to the version tested
 mlx-whisper     # local transcription fallback, Apple Silicon only

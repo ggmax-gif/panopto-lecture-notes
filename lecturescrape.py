@@ -68,6 +68,10 @@ class Config:
     obsidian_vault: str
     obsidian_folder: str
     autosync_check: int
+    # claude backend only: how hard the model thinks. high is the API default
+    # on Claude Opus 5; medium and low cost less and are worth trying on
+    # lectures that are mostly prose.
+    effort: str = "high"
 
     @classmethod
     def load(cls) -> "Config":
@@ -105,6 +109,7 @@ class Config:
             obsidian_vault=raw.get("obsidian_vault", ""),
             obsidian_folder=raw.get("obsidian_folder", "Lectures"),
             autosync_check=int(raw.get("autosync_check", 20)),
+            effort=str(raw.get("effort", "high")),
         )
 
 
@@ -1247,9 +1252,9 @@ def cmd_analyse(cfg: Config, args) -> None:
         cfg.backend = args.backend
     if args.vision:
         cfg.vision = True
-    if cfg.vision and cfg.backend not in ("antigravity", "openai"):
-        die(f"--vision needs the antigravity or openai backend; {cfg.backend} "
-            f"can't read the slide images.")
+    if cfg.vision and cfg.backend not in ("antigravity", "openai", "claude"):
+        die(f"--vision needs the antigravity, openai or claude backend; "
+            f"{cfg.backend} can't read the slide images.")
     if cfg.vision and cfg.backend == "openai":
         # Ollama knows which of its models can see, so a text-only model gets
         # turned away here rather than silently ignoring every slide sent.
@@ -1308,8 +1313,8 @@ def analyse_batch(cfg: Config, args) -> None:
               f"{out_name}. Use --redo to rewrite them.")
         return
 
-    where = ("via agy" + (", reading the slides" if cfg.vision else "")
-             if cfg.backend == "antigravity" else f"at {cfg.endpoint}")
+    where = {"antigravity": "via agy" + (", reading the slides" if cfg.vision else ""),
+             "claude": "via the Claude API"}.get(cfg.backend, f"at {cfg.endpoint}")
     print(f"{len(todo)} of {len(dirs)} lecture(s) need notes "
           f"({cfg.model} {where})\n")
 
@@ -1741,6 +1746,129 @@ def fit_to_context(text: str, budget: int) -> tuple[str, str, int]:
     return cut, "TRANSCRIPT TRUNCATED — lecture too long for this context window", 0
 
 
+# The Claude API serves a 1M-token window on every current model, so a lecture
+# goes through untrimmed: the largest bundle in this library is 132k
+# characters, about 44k tokens. The limit sits below 1M because est_tokens is
+# a len//3 estimate, not a count.
+CLAUDE_TOKEN_LIMIT = 900_000
+
+# Room for adaptive thinking plus the notes. Notes run 5-25 KB, and thinking
+# on a long lecture can take as much again. The request streams, so a limit
+# this size does not risk the HTTP timeout a non-streaming call would.
+CLAUDE_MAX_TOKENS = 64_000
+
+# List prices per million tokens (input, output), September 2026, for the cost
+# line printed after each lecture. A model missing from here still runs and
+# reports tokens without a price.
+CLAUDE_PRICES = {
+    "claude-opus-5": (5.0, 25.0),
+    "claude-opus-5-5": (4.0, 20.0),
+    "claude-sonnet-5": (2.0, 10.0),
+    "claude-haiku-4-5": (1.0, 5.0),
+}
+
+# Server-side refusal fallbacks are documented for these families. Other
+# models are sent without them.
+CLAUDE_FALLBACK_FAMILIES = ("claude-opus-5", "claude-fable-5")
+
+
+def claude_analysis(cfg: Config, d: Path, body: str, prompt: str,
+                    images: list[Path]) -> str:
+    """Run the notes through the Claude API: one streamed request per lecture.
+
+    The whole bundle fits (see CLAUDE_TOKEN_LIMIT), so none of the slide
+    dropping a 32k local window forces happens here and the delta prompt sees
+    every slide. Unlike the openai backend pointed at Ollama, this sends the
+    transcript and slide text to Anthropic.
+    """
+    try:
+        import anthropic
+    except ImportError:
+        raise RuntimeError("pip install anthropic")
+
+    # A tag like qwen3.8:27b-mlx left over from the openai backend would
+    # otherwise cost one failed request per lecture in a batch.
+    if ":" in cfg.model or not cfg.model.startswith("claude-"):
+        raise RuntimeError(
+            f"{cfg.model!r} is not a Claude model id. Set model to one such "
+            f"as claude-opus-5 or claude-sonnet-5 in config.yaml, or pass "
+            f"--model.")
+
+    content = [{"type": "image",
+                "source": {"type": "base64", "media_type": "image/jpeg",
+                           "data": base64.b64encode(p.read_bytes()).decode()}}
+               for p in images]
+    content.append({"type": "text", "text": f"{prompt}\n\n---\n\n{body}"})
+
+    fallback = ({"betas": ["server-side-fallback-2026-07-01"],
+                 "fallbacks": "default"}
+                if cfg.model.startswith(CLAUDE_FALLBACK_FAMILIES) else {})
+
+    showing = f", showing it {len(images)} slide(s)" if images else ""
+    print(f"asking {cfg.model} via the Claude API "
+          f"(effort {cfg.effort}{showing}) ...")
+
+    client = anthropic.Anthropic(timeout=cfg.request_timeout, max_retries=2)
+    try:
+        with client.beta.messages.stream(
+            model=cfg.model,
+            max_tokens=CLAUDE_MAX_TOKENS,
+            thinking={"type": "adaptive"},
+            output_config={"effort": cfg.effort},
+            messages=[{"role": "user", "content": content}],
+            **fallback,
+        ) as stream:
+            msg = stream.get_final_message()
+    except TypeError as e:
+        # With no key and no profile the SDK raises a bare TypeError rather
+        # than an API error, before anything has been sent.
+        if "authentication" not in str(e).lower():
+            raise
+        raise RuntimeError(
+            "No Anthropic credentials found. Export ANTHROPIC_API_KEY with a "
+            "key from console.anthropic.com and run this again.") from None
+    except anthropic.AuthenticationError:
+        raise RuntimeError("ANTHROPIC_API_KEY was rejected. Check it in the "
+                           "Console.") from None
+    except anthropic.NotFoundError:
+        raise RuntimeError(f"The API does not know model {cfg.model!r}.") from None
+    except anthropic.BadRequestError as e:
+        raise RuntimeError(f"The Claude API rejected the request: "
+                           f"{e.message}") from None
+
+    for block in msg.content:
+        if block.type == "fallback":
+            print(f"  {block.from_.model} declined; {block.to.model} wrote "
+                  f"the notes instead")
+
+    # Nothing is written for either of these. A refused lecture has no notes,
+    # and truncated notes read as complete.
+    if msg.stop_reason == "refusal":
+        category = getattr(msg.stop_details, "category", None)
+        raise RuntimeError(
+            f"{msg.model} declined this lecture"
+            + (f" (category {category})" if category else "")
+            + ". Nothing was written.")
+    if msg.stop_reason == "max_tokens":
+        raise RuntimeError(
+            f"The reply reached max_tokens ({CLAUDE_MAX_TOKENS:,}) before the "
+            f"notes were finished, so nothing was written. Lower effort in "
+            f"config.yaml and run it again.")
+
+    notes = "".join(b.text for b in msg.content if b.type == "text").strip()
+    if not notes:
+        raise RuntimeError(f"{msg.model} returned no text.")
+
+    usage = msg.usage
+    line = f"  {usage.input_tokens:,} tokens in, {usage.output_tokens:,} out"
+    price = CLAUDE_PRICES.get(msg.model)
+    if price:
+        cost = (usage.input_tokens * price[0] + usage.output_tokens * price[1]) / 1e6
+        line += f", about ${cost:.2f}"
+    print(line)
+    return notes
+
+
 def run_analysis(cfg: Config, d: Path, use_slides: bool = False,
                  prompt: str = DEFAULT_PROMPT, out_name: str = "notes.md") -> str:
     # transcript.md names no slides at all, so vision against it would be an
@@ -1756,7 +1884,7 @@ def run_analysis(cfg: Config, d: Path, use_slides: bool = False,
     # the transcript uses, so the pictures are chosen and costed before the
     # text is trimmed to fit around them.
     images: list[Path] = []
-    if cfg.vision and cfg.backend == "openai":
+    if cfg.vision and cfg.backend in ("openai", "claude"):
         images = slides_worth_seeing(d, cfg.vision_slides)
         if not images:
             print("  no slides with figures on them — sending text only")
@@ -1765,6 +1893,8 @@ def run_analysis(cfg: Config, d: Path, use_slides: bool = False,
     # model behind agy has no reason to be held to.
     if cfg.backend == "antigravity":
         limit = ANTIGRAVITY_TOKEN_LIMIT
+    elif cfg.backend == "claude":
+        limit = CLAUDE_TOKEN_LIMIT
     else:
         limit = ollama_window(cfg.endpoint, cfg.model) or cfg.max_context_tokens
         if limit != cfg.max_context_tokens:
@@ -1823,6 +1953,11 @@ def run_analysis(cfg: Config, d: Path, use_slides: bool = False,
 
     if cfg.backend == "antigravity":
         notes = antigravity_analysis(cfg, d, body, prompt)
+        (d / out_name).write_text(notes + "\n")
+        return notes
+
+    if cfg.backend == "claude":
+        notes = claude_analysis(cfg, d, body, prompt, images)
         (d / out_name).write_text(notes + "\n")
         return notes
 
@@ -3355,7 +3490,7 @@ def main() -> None:
                    help="use bundle.md (with slide refs) instead of transcript.md")
     s.add_argument("--prompt", help="path to a custom prompt file")
     s.add_argument("--model", help="override the model in config.yaml")
-    s.add_argument("--backend", choices=["openai", "antigravity"],
+    s.add_argument("--backend", choices=["openai", "antigravity", "claude"],
                    help="override the backend in config.yaml")
     s.add_argument("--jobs", type=int, default=1, metavar="N",
                    help="lectures to analyse at once on a batch run; worth "
