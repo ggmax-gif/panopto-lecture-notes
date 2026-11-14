@@ -188,6 +188,59 @@ def test_the_cost_is_printed(ls, cfg, lecture, sdk, capsys):
     assert "about $0.40" in capsys.readouterr().out
 
 
+@pytest.mark.parametrize("model,tokens_in,tokens_out,want", [
+    ("claude-opus-5", 40_000, 8_000, 0.40),
+    ("claude-sonnet-5-5", 40_000, 8_000, 0.16),
+    ("claude-haiku-5-5", 40_000, 8_000, 0.008),
+    ("claude-haiku-5-5", 100_000, 8_000, 0.014),      # at the threshold: first card
+    ("claude-haiku-5-5", 120_000, 8_000, 0.08),       # over it: five times the rate
+    ("claude-opus-5-5", 120_000, 8_000, 0.64),        # no second card for Opus
+])
+def test_cost_uses_the_rate_card_the_prompt_length_selects(ls, model, tokens_in, tokens_out, want):
+    assert ls.claude_cost(model, tokens_in, tokens_out) == pytest.approx(want)
+
+
+def test_a_model_with_no_price_has_no_cost(ls):
+    assert ls.claude_cost("claude-future-9", 1000, 1000) is None
+
+
+def test_a_sub_cent_cost_is_not_printed_as_zero(ls, cfg, lecture, sdk, capsys):
+    message = reply(model="claude-haiku-5-5")
+    message.usage = NS(input_tokens=9_000, output_tokens=2_000)   # $0.0019
+    sdk(message=message)
+    d, _ = lecture(bundle=bundle_with(1))
+    ls.run_analysis(claude(cfg, model="claude-haiku-5-5"), d, use_slides=True,
+                    prompt=ls.DELTA_PROMPT)
+    out = capsys.readouterr().out
+    assert "under $0.01" in out and "$0.00" not in out
+
+
+def test_haiku_5_5_is_sent_without_fallbacks(ls, cfg, lecture, sdk):
+    """It has no server-side fallback, and the list form is a 400 there."""
+    calls = sdk(message=reply(model="claude-haiku-5-5"))
+    d, _ = lecture(bundle=bundle_with(1))
+    ls.run_analysis(claude(cfg, model="claude-haiku-5-5"), d, use_slides=True,
+                    prompt=ls.DELTA_PROMPT)
+    assert "fallbacks" not in calls[0] and "betas" not in calls[0]
+
+
+def test_sonnet_5_5_is_sent_with_fallbacks(ls, cfg, lecture, sdk):
+    calls = sdk(message=reply(model="claude-sonnet-5-5"))
+    d, _ = lecture(bundle=bundle_with(1))
+    ls.run_analysis(claude(cfg, model="claude-sonnet-5-5"), d, use_slides=True,
+                    prompt=ls.DELTA_PROMPT)
+    assert calls[0]["fallbacks"] == "default"
+
+
+def test_the_cost_after_a_fallback_says_what_it_covers(ls, cfg, lecture, sdk, capsys):
+    switch = NS(type="fallback", from_=NS(model="claude-opus-5-5"),
+                to=NS(model="claude-opus-5"))
+    sdk(message=reply(model="claude-opus-5", extra=(switch,)))
+    d, _ = lecture(bundle=bundle_with(1))
+    ls.run_analysis(claude(cfg), d, use_slides=True, prompt=ls.DELTA_PROMPT)
+    assert "for the model that answered" in capsys.readouterr().out
+
+
 # ----------------------------------------------------- refused before spending
 
 def test_a_local_model_tag_is_refused_before_any_request(ls, cfg, lecture, sdk):

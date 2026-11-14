@@ -1835,12 +1835,30 @@ CLAUDE_PRICES = {
     "claude-opus-5": (5.0, 25.0),
     "claude-opus-5-5": (4.0, 20.0),
     "claude-sonnet-5": (2.0, 10.0),
+    "claude-sonnet-5-5": (2.0, 10.0),
+    "claude-haiku-5-5": (0.10, 0.50),
     "claude-haiku-4-5": (1.0, 5.0),
 }
+# Haiku 5.5 has a second rate card for prompts over 100K tokens, five times
+# the first. One flat entry would understate a long lecture by that factor.
+CLAUDE_LONG_PROMPT_TOKENS = 100_000
+CLAUDE_LONG_PROMPT_PRICES = {"claude-haiku-5-5": (0.50, 2.50)}
+
+
+def claude_cost(model: str, tokens_in: int, tokens_out: int) -> float | None:
+    """List-price cost in dollars, or None for a model with no entry."""
+    price = CLAUDE_PRICES.get(model)
+    if tokens_in > CLAUDE_LONG_PROMPT_TOKENS:
+        price = CLAUDE_LONG_PROMPT_PRICES.get(model, price)
+    if not price:
+        return None
+    return (tokens_in * price[0] + tokens_out * price[1]) / 1e6
+
 
 # Server-side refusal fallbacks are documented for these families. Other
-# models are sent without them.
-CLAUDE_FALLBACK_FAMILIES = ("claude-opus-5", "claude-fable-5")
+# models are sent without them: Haiku 5.5 has none, and a refused request
+# there stays refused.
+CLAUDE_FALLBACK_FAMILIES = ("claude-opus-5", "claude-fable-5", "claude-sonnet-5-5")
 
 
 def claude_analysis(cfg: Config, d: Path, body: str, prompt: str,
@@ -1907,8 +1925,10 @@ def claude_analysis(cfg: Config, d: Path, body: str, prompt: str,
         raise RuntimeError(f"The Claude API rejected the request: "
                            f"{e.message}") from None
 
+    fell_back = False
     for block in msg.content:
         if block.type == "fallback":
+            fell_back = True
             print(f"  {block.from_.model} declined; {block.to.model} wrote "
                   f"the notes instead")
 
@@ -1932,10 +1952,12 @@ def claude_analysis(cfg: Config, d: Path, body: str, prompt: str,
 
     usage = msg.usage
     line = f"  {usage.input_tokens:,} tokens in, {usage.output_tokens:,} out"
-    price = CLAUDE_PRICES.get(msg.model)
-    if price:
-        cost = (usage.input_tokens * price[0] + usage.output_tokens * price[1]) / 1e6
-        line += f", about ${cost:.2f}"
+    cost = claude_cost(msg.model, usage.input_tokens, usage.output_tokens)
+    if cost is not None:
+        line += f", about ${cost:.2f}" if cost >= 0.005 else ", under $0.01"
+        if fell_back:
+            # The attempt that declined may be billed too, and is not in here.
+            line += " for the model that answered"
     print(line)
     return notes
 
