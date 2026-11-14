@@ -1,6 +1,6 @@
 # lecturescrape — orientation
 
-Read this before changing anything. One 3,422-line module, `lecturescrape.py`, with eleven subcommands: `sync process prune analyse export concepts verify autosync schedule serve status`. Plus a web UI and `build_app.py` for the packaged Mac app.
+Read this before changing anything. One 3,771-line module, `lecturescrape.py`, with eleven subcommands: `sync process prune analyse export concepts verify autosync schedule serve status`. Plus a web UI and `build_app.py` for the packaged Mac app.
 
 **What this is.** Panopto recording → notes covering *what the lecturer said that the slides don't*. The output is a **delta, not a summary**: timestamped transcript plus slide text from OCR, interleaved, and a model asked for the difference. Every claim carries a timestamp that deep-links back into the recording. Runs locally except the optional hosted-model step.
 
@@ -18,7 +18,7 @@ The rule the history has converged on: **when a guard misjudges, move the file, 
 pip install -r requirements-dev.txt && pytest
 ```
 
-127 tests, under a second, no network, no ffmpeg, no Vision, no model server.
+188 tests, about a second, no network, no ffmpeg, no Vision, no model server.
 Every lecture, slide and vault is synthesised under `tmp_path` — `library/` is
 gitignored and absent from a fresh clone, so no test can touch a real
 recording while proving the code doesn't.
@@ -28,7 +28,8 @@ descends from and asserts what that commit bought. **If you change a guard,
 the test that fails will tell you which lecture it once destroyed.**
 
 The suite was validated by reverting each fix in a scratch copy and confirming
-the matching test failed — seven mutations, seven caught. Do that again if you
+the matching test failed — seven mutations, seven caught, then seventeen of
+seventeen for the November 2026 audit fixes. Do that again if you
 add tests here: one written after the fix proves nothing until it has been
 shown to fail without it.
 
@@ -37,6 +38,8 @@ shown to fail without it.
 - **`prune_video` requires the slides, not the bundle.** Taking "a bundle exists" as proof the slides were extracted destroyed a video the moment it arrived: a transcript-only lecture has a bundle *before* it has a recording, and afterwards `process` says "skip (done)" forever because the bundle is there and the video it needed is gone. `is_pruned` already asked the right question and now shares the predicate.
 - **The all-blank path must write `slides.json` before returning.** The stale file it used to leave listed frames that no longer existed, which read downstream as "slides extracted" and authorised a prune that took the only remaining copy of a lecture.
 - **Blank frames are judged only after OCR has testified.** Local contrast cannot separate a clean desktop (0.14) from a pale line diagram (0.13), so a frame goes for having no text *and* nothing visible — never on the picture alone.
+- **Every step that thins slides calls `set_aside`, which moves the frame to `slides/dropped/`.** The `max_slides` cap, the same-text merge and the transition-burst collapse used to unlink. The video is pruned minutes later, so those frames had no other copy; two lectures sit at exactly the 60-slide cap with their videos gone. Text overlap cannot see a diagram change, and the cap drops by position alone.
+- **`write_notes` moves the earlier notes to the lecture's `.trash/` before writing.** A second analysis used to replace `notes.md`, which on the claude backend discarded a paid result. The copy must not be named `notes*.md` in the lecture directory, or the viewer lists it as a second set of notes.
 - **`export`'s supersede check reads only the frontmatter block, line by line.** Reading the first 800 characters of the whole file killed a user's own hand-written revision note for containing a pasted lecture link and a bullet that began "- transcript". A note is superseded only when its frontmatter shows this exporter wrote it, for this recording.
 
 ## Silent-failure paths
@@ -69,6 +72,10 @@ Default is `qwen3.8:27b-mlx`, chosen by measurement rather than assumption: agai
 `backend: claude` sends each lecture to the Claude API in one streamed request. Its 1M window means `fit_to_context` never trims there, so the slide-dropping rules above only bite on the local backend. A refused reply or one that hits `max_tokens` writes no notes: a truncated note reads as complete.
 
 `serve` runs the viewer's daemon. It once handed the library to every site you visited via a wildcard CORS header; the Chrome extension that needed cross-origin access is gone and so is the header. It answers no cross-origin request now — don't reintroduce one.
+
+No CORS header stops another site reading a reply, not sending a request. `request_refusal` covers that: the Host must be 127.0.0.1 or localhost (a rebound domain is same-origin to the browser), a request labelled cross-site is refused, and a POST must be `application/json` because a text/plain POST skips the preflight. Anything that writes is a POST; export was a GET an image tag could trigger. A notes name from the query goes through `notes_path`, and `parse_panopto` refuses a host that only contains the word panopto.
+
+`build_app.py` compiles the bundle's executable and signs it ad hoc. macOS judges Full Disk Access by the process the app launched as; with a script as the executable that was `/bin/bash` and no grant matched. The executable must spawn the script, not exec it.
 
 ## Commit messages
 

@@ -1,6 +1,6 @@
 # Running the tests. The suite needs neither ffmpeg, yt-dlp, Vision nor a
 # model server — OCR is stubbed and subprocess calls are faked — so this is
 # all of it. Nothing here is needed to *run* lecturescrape; see requirements.txt.
-pytest
-pillow          # draws the slide frames the blank-frame tests judge
+pytest==8.4.2
+pillow==12.0.0          # draws the slide frames the blank-frame tests judge
 anthropic==1.8.0  # one test checks the real SDK's request; it skips without this

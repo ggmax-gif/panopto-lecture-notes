@@ -350,7 +350,7 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-127 tests, under a second, no network. They need neither ffmpeg, yt-dlp, Vision
+188 tests, about a second, no network. They need neither ffmpeg, yt-dlp, Vision
 nor a model server: OCR is stubbed, `subprocess.run` is faked, and every
 lecture, slide and vault is synthesised in a temp directory — `library/` is
 gitignored and does not exist on a fresh clone, so it could not be a fixture
@@ -366,6 +366,8 @@ commit it descends from, and asserts the behaviour that commit bought:
 | --- | --- |
 | `test_export_supersede.py` | A note this exporter did not write is never removed, and one it did write goes to `.trash/` rather than being unlinked |
 | `test_slides_blank.py` | A frame is only judged once OCR has testified, never judged at all without it, and set aside rather than deleted |
+| `test_slides_set_aside.py` | The slide cap, the same-text merge and the transition-burst collapse move frames to `slides/dropped/` and delete none |
+| `test_notes_files.py` | A notes name cannot point outside the lecture, and writing notes again keeps the earlier version in `.trash/` |
 | `test_prune_guards.py` | The recording goes only when the slides are demonstrably out of it |
 | `test_timestamps.py` | Both forms the model writes become links, exactly once, and links already there are left alone |
 | `test_context_budget.py` | A surviving slide is intact, and a negative budget returns nothing rather than everything |
@@ -373,10 +375,12 @@ commit it descends from, and asserts the behaviour that commit bought:
 | `test_urls_and_verify.py` | Folder links canonicalise, and `verify`'s old false positives stay fixed |
 | `test_lecture_info.py` | A missing, corrupt or unreadable metadata sidecar degrades to no-metadata rather than taking the command down |
 | `test_daemon_origin.py` | The daemon answers no cross-origin request — a canary on the header that once leaked the library |
+| `test_daemon_requests.py` | A running daemon refuses a foreign Host, a cross-site or text/plain POST, and export by GET |
 | `test_claude_backend.py` | The Claude backend sends every slide, opts into refusal fallbacks, and writes nothing for a refused or truncated reply; one test checks the real SDK's request on a local server |
 
 The suite was checked by reverting each fix in a scratch copy and confirming
-the matching test failed — seven mutations, seven caught. A test written after
+the matching test failed — seven mutations, seven caught, and seventeen more
+for the November 2026 audit fixes. A test written after
 the fix proves nothing until it has been shown to fail without it.
 
 ## Authentication
@@ -398,6 +402,8 @@ nothing, and an unguarded sync reports success having downloaded no lectures.
 `sync`, `autosync` and the viewer's Add button check for both before starting and say which one they hit.
 
 **macOS 27 blocks the cookie file itself.** It protects browser data folders the way it already protected Safari's, and yt-dlp then reports `could not find chrome cookies database` even while you are logged in. Logging in again changes nothing. Give Full Disk Access (System Settings > Privacy & Security) to whatever runs the download: `Lecture Notes.app` for the viewer, your terminal for the command line. The preflight check names this case when it sees it.
+
+macOS matches that permission to the process the app was launched as, so `build_app.py` compiles a small executable for the bundle and signs it locally. The signature is a hash of the app's contents: after every rebuild, remove the old `Lecture Notes` entry from Full Disk Access and add the app again. The weekly autosync runs Python directly and needs its own entry for that interpreter.
 Either way: log back into Recap and re-run.
 
 ## Use
