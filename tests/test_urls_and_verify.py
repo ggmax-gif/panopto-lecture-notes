@@ -31,6 +31,27 @@ def test_folder_links_canonicalise_to_a_query(ls, pasted):
 
 
 @pytest.mark.parametrize("pasted", [
+    f"https://panopto.evil.com/Panopto/Pages/Viewer.aspx?id={VIDEO_ID}",
+    f"https://{HOST}@evil.com/Panopto/Pages/Viewer.aspx?id={VIDEO_ID}",
+    f"https://{HOST}.evil.com/Panopto/Pages/Viewer.aspx?id={VIDEO_ID}",
+    f"https://evil.com:80panopto/Panopto/Pages/Sessions/List.aspx?folderID={FOLDER_ID}",
+])
+def test_a_host_that_only_mentions_panopto_is_refused(ls, pasted):
+    """Audit, November 2026: the host was accepted for containing the word,
+    so the daemon would fetch and decode media from any server named that
+    way."""
+    assert ls.parse_panopto(pasted) is None
+
+
+@pytest.mark.parametrize("host", [HOST, "exeter.cloud.panopto.eu",
+                                  "uni.hosted.panopto.com", HOST.upper()])
+def test_real_panopto_hosts_are_kept(ls, host):
+    t = ls.parse_panopto(f"https://{host}/Panopto/Pages/Viewer.aspx?id={VIDEO_ID}")
+    assert t["host"] == host.lower()
+
+
+
+@pytest.mark.parametrize("pasted", [
     f"https://{HOST}/Panopto/Pages/Viewer.aspx?id={VIDEO_ID}&instance=MoodleELE2",
     f"https://{HOST}/Panopto/Pages/Viewer.aspx?id={VIDEO_ID}",
     VIDEO_ID,

@@ -252,7 +252,8 @@ const parseTs = t => {
   const p = t.split(':').map(Number);
   return p.length === 3 ? p[0]*3600 + p[1]*60 + p[2] : p[0]*60 + p[1];
 };
-const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+  .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 
 // ---------------------------------------------------------------- library
 
@@ -329,7 +330,7 @@ async function openLecture(id) {
       // send them to Panopto instead.
       bar.innerHTML = `<span>Recording pruned to save space — slides and
         transcript are intact.</span>
-        <a href="${lecture.source || sourceUrl()}" target="_blank"
+        <a href="${esc(lecture.source || sourceUrl())}" target="_blank"
            rel="noopener"><button>Watch on Panopto</button></a>`;
     } else {
       bar.innerHTML = `<span>Transcript only — no video or slides for this
@@ -447,7 +448,7 @@ function renderTranscript() {
       // like one.
       const ts = $('#video').src
         ? `<span class="ts">${fmt(ev.t)}</span>`
-        : `<a class="ts" href="${panoptoAt(ev.t)}" target="_blank" rel="noopener"
+        : `<a class="ts" href="${esc(panoptoAt(ev.t))}" target="_blank" rel="noopener"
              title="Open at ${fmt(ev.t)} on Panopto">${fmt(ev.t)}</a>`;
       d.innerHTML = `${ts}<span class="tx">${esc(ev.g.text)}</span>`;
       d.onclick = e => { if (e.target.tagName !== 'A') seek(ev.t); };
@@ -648,7 +649,7 @@ $('#btn-verify').onclick = async () => {
       <span class="${bad ? 'bad' : 'good'}">unsupported <b>${bad}</b></span>
       <span>citations <b>${r.timestamps}</b></span>
       <span class="${oor ? 'bad' : 'good'}">out of range <b>${oor}</b></span>
-      <span class="dim">${r.notes}</span>
+      <span class="dim">${esc(r.notes)}</span>
     </div>
     ${bad ? '<div class="dim" style="margin-top:6px">' +
       r.unsupported.slice(0, 6).map(u =>
@@ -731,8 +732,13 @@ $('#btn-export').onclick = async () => {
   const box = $('#verify');
   box.style.display = 'block';
 
-  const r = await api(`/api/export?id=${lecture.id}` +
-    `&notes=${encodeURIComponent(activeNotes)}&transcript=1`);
+  // A POST: export writes into the vault, and the daemon refuses to do that
+  // on a GET any page could trigger.
+  const r = await fetch('/api/export', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id: lecture.id, notes: activeNotes, transcript: true }),
+  }).then(r => r.json());
 
   btn.disabled = false; btn.textContent = 'Send to Obsidian';
   box.innerHTML = r.error

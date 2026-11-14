@@ -357,6 +357,7 @@ def panopto_id(url: str) -> str | None:
 UUID_RE = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
                      r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 DEFAULT_HOST = "recapexeter.cloud.panopto.eu"
+PANOPTO_HOST_RE = re.compile(r"(?:[a-z0-9-]+\.)+panopto\.(?:eu|com)")
 
 
 def parse_panopto(text: str) -> dict | None:
@@ -370,10 +371,16 @@ def parse_panopto(text: str) -> dict | None:
     if not text:
         return None
 
+    # A link that names a Panopto host must name a real one. Looking for the
+    # word anywhere in the host accepted panopto.evil.com and
+    # recapexeter.cloud.panopto.eu@evil.com, and the daemon would then fetch
+    # and decode whatever that server sent.
     host = DEFAULT_HOST
     m = re.search(r"https?://([^/\s]+)", text)
     if m and "panopto" in m.group(1).lower():
-        host = m.group(1)
+        host = m.group(1).lower()
+        if not PANOPTO_HOST_RE.fullmatch(host):
+            return None
 
     # Browsing folders in Panopto's own UI puts the id in a hash fragment with
     # URL-encoded quotes — List.aspx#folderID=%22<uuid>%22 — so accept that too.
@@ -3216,13 +3223,83 @@ class _Tee:
         self.real.flush()
 
 
+LOCAL_HOSTNAMES = {"127.0.0.1", "localhost", "[::1]"}
+MAX_REQUEST_BODY = 1 << 20
+
+
+def request_refusal(headers, method: str) -> str | None:
+    """Why the daemon should refuse this request, or None to serve it.
+
+    Binding to loopback and sending no CORS header stops another site
+    *reading* a reply. It does not stop one *sending* a request, and three
+    ways in were open:
+
+    - A page whose domain resolves to 127.0.0.1 (DNS rebinding) is the same
+      origin as far as the browser can tell, and could read the whole
+      library. Its Host header still names the attacker's domain.
+    - A cross-site POST with a text/plain body needs no preflight, and the
+      body was parsed as JSON whatever it claimed to be. Any page could queue
+      downloads and paid analysis runs.
+    - Browsers label cross-site requests with Sec-Fetch-Site, image tags
+      included. Anything so labelled is refused.
+    """
+    host = (headers.get("Host") or "").strip().lower()
+    name = host.rsplit(":", 1)[0] if host.rsplit(":", 1)[-1].isdigit() else host
+    if name not in LOCAL_HOSTNAMES:
+        return "this daemon only answers as 127.0.0.1 or localhost"
+
+    if (headers.get("Sec-Fetch-Site") or "same-origin").lower() not in (
+            "same-origin", "none"):
+        return "cross-site requests are refused"
+
+    origin = headers.get("Origin")
+    if origin and origin.lower() not in (f"http://{host}", f"https://{host}"):
+        return "cross-origin requests are refused"
+
+    if method == "POST":
+        ctype = (headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        if ctype != "application/json":
+            return "POST needs Content-Type: application/json"
+    return None
+
+
+def parse_range(header: str, size: int) -> tuple[int, int] | None:
+    """(start, end) for a single-range Range header, or None to send it all.
+
+    `bytes=-500` means the last 500 bytes. It was read as bytes 0-500.
+    """
+    if not header.startswith("bytes=") or size <= 0:
+        return None
+    s, _, e = header[6:].partition("-")
+    if s.isdigit():
+        start = int(s)
+        end = min(int(e), size - 1) if e.isdigit() else size - 1
+    elif e.isdigit() and int(e) > 0:
+        start, end = max(size - int(e), 0), size - 1
+    else:
+        return None
+    return (start, end) if start <= end else None
+
+
 def cmd_serve(cfg: Config, args) -> None:
+    server = build_server(cfg, args.port or cfg.port)
+    print(f"lecturescrape daemon on http://127.0.0.1:{server.server_port}")
+    print(f"  analysis -> {cfg.model} at {cfg.endpoint}")
+    print("  ctrl-c to stop")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\nstopped")
+
+
+def build_server(cfg: Config, port: int):
     """Local daemon behind the viewer. Bound to loopback only, and it answers
     no cross-origin request at all: the viewer is served from this same origin
     and needs none. The wildcard that used to be here let any page you happened
     to be visiting read your whole library — lecture list, transcripts, notes —
     because the daemon listens on localhost and the browser will make that
-    request on the page's behalf. Don't reintroduce it."""
+    request on the page's behalf. Don't reintroduce it. request_refusal covers
+    the requests a page can still send without reading the reply."""
     import contextlib
     import mimetypes
     import queue
@@ -3339,14 +3416,9 @@ def cmd_serve(cfg: Config, args) -> None:
             ctype = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
 
             start, length, code = 0, size, 200
-            rng = self.headers.get("Range", "")
-            if rng.startswith("bytes="):
-                s, _, e = rng[6:].partition("-")
-                start = int(s) if s.isdigit() else 0
-                end = int(e) if e.isdigit() else size - 1
-                end = min(end, size - 1)
-                if start > end:
-                    start, end = 0, size - 1
+            rng = parse_range(self.headers.get("Range", ""), size)
+            if rng:
+                start, end = rng
                 length, code = end - start + 1, 206
 
             self.send_response(code)
@@ -3382,7 +3454,15 @@ def cmd_serve(cfg: Config, args) -> None:
 
         # -------------------------------------------------- routes
 
+        def _refused(self, method: str) -> bool:
+            why = request_refusal(self.headers, method)
+            if why:
+                self._send(403, {"error": why})
+            return bool(why)
+
         def do_GET(self):
+            if self._refused("GET"):
+                return
             parsed = urlparse(self.path)
             route, q = parsed.path, parse_qs(parsed.query)
 
@@ -3404,24 +3484,6 @@ def cmd_serve(cfg: Config, args) -> None:
                 if not lec:
                     return self._send(404, {"error": "no such lecture"})
                 return self._send(200, lec)
-
-            if route == "/api/export":
-                d = find_by_id(q.get("id", [""])[0])
-                if not d:
-                    return self._send(404, {"error": "no such lecture"})
-                vault = Path(cfg.obsidian_vault or "").expanduser()
-                if not cfg.obsidian_vault or not vault.exists():
-                    return self._send(400, {
-                        "error": "No Obsidian vault configured — set "
-                                 "obsidian_vault in config.yaml"})
-                try:
-                    r = export_obsidian(cfg, d, vault,
-                                        q.get("notes", ["notes.md"])[0],
-                                        with_transcript=q.get("transcript",
-                                                              ["0"])[0] == "1")
-                    return self._send(200, r)
-                except RuntimeError as e:
-                    return self._send(400, {"error": str(e)})
 
             if route == "/api/verify":
                 d = find_by_id(q.get("id", [""])[0])
@@ -3446,14 +3508,45 @@ def cmd_serve(cfg: Config, args) -> None:
 
             self._send(404, {"error": "not found"})
 
+        def _export(self, req: dict):
+            """A POST because it writes: into the vault, and it moves the
+            notes it supersedes into the vault's .trash/. As a GET, an image
+            tag on any page could trigger it."""
+            d = find_by_id(str(req.get("id") or ""))
+            if not d:
+                return self._send(404, {"error": "no such lecture"})
+            vault = Path(cfg.obsidian_vault or "").expanduser()
+            if not cfg.obsidian_vault or not vault.exists():
+                return self._send(400, {
+                    "error": "No Obsidian vault configured — set "
+                             "obsidian_vault in config.yaml"})
+            try:
+                r = export_obsidian(cfg, d, vault,
+                                    str(req.get("notes") or "notes.md"),
+                                    with_transcript=bool(req.get("transcript")))
+                return self._send(200, r)
+            except RuntimeError as e:
+                return self._send(400, {"error": str(e)})
+
         def do_POST(self):
-            if self.path != "/jobs":
+            if self._refused("POST"):
+                return
+            if self.path not in ("/jobs", "/api/export"):
                 return self._send(404, {"error": "not found"})
             try:
+                # A negative length made rfile.read block until the client
+                # hung up, holding the thread.
                 n = int(self.headers.get("Content-Length", 0))
+                if not 0 <= n <= MAX_REQUEST_BODY:
+                    raise ValueError(n)
                 req = json.loads(self.rfile.read(n) or b"{}")
+                if not isinstance(req, dict):
+                    raise ValueError("not an object")
             except (ValueError, json.JSONDecodeError):
                 return self._send(400, {"error": "bad json"})
+
+            if self.path == "/api/export":
+                return self._export(req)
 
             target = parse_panopto(req.get("url", ""))
             if not target:
@@ -3499,14 +3592,7 @@ def cmd_serve(cfg: Config, args) -> None:
         def log_message(self, *a):  # quiet; the pipeline prints its own progress
             pass
 
-    server = ThreadingHTTPServer(("127.0.0.1", args.port or cfg.port), Handler)
-    print(f"lecturescrape daemon on http://127.0.0.1:{server.server_port}")
-    print(f"  analysis -> {cfg.model} at {cfg.endpoint}")
-    print("  ctrl-c to stop")
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        print("\nstopped")
+    return ThreadingHTTPServer(("127.0.0.1", port), Handler)
 
 
 # ---------------------------------------------------------------- status
