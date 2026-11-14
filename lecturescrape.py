@@ -24,6 +24,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -842,6 +843,27 @@ def similarity(a: str, b: str) -> float:
 # ------------------------------------------------- slides
 
 
+DROPPED_DIR = "dropped"
+
+
+def set_aside(d: Path, file: str) -> None:
+    """Move a frame out of the slide set into slides/dropped/. Never unlink.
+
+    Every step that thins the frames is a judgement that can be wrong: a
+    blank-looking frame may be a pale diagram, two frames with the same text
+    may be one diagram before and after a curve shifts, and the max_slides cap
+    drops real slides by position alone. The video is pruned minutes later, so
+    a frame deleted here has no other copy. Two real lectures sit at exactly
+    the cap with their videos pruned, from before this existed.
+    """
+    src = d / file
+    if not src.exists():
+        return
+    bin_ = d / SLIDE_DIR / DROPPED_DIR
+    bin_.mkdir(parents=True, exist_ok=True)
+    src.rename(bin_ / src.name)
+
+
 def extract_slides(cfg: Config, d: Path, video: Path | None) -> list[dict]:
     out = d / SLIDE_DIR
     cached = d / "slides.json"
@@ -899,7 +921,7 @@ def extract_slides(cfg: Config, d: Path, video: Path | None) -> list[dict]:
         collapsed = [slides[0]]
         for s in slides[1:]:
             if s["time"] - collapsed[-1]["time"] < cfg.min_slide_gap:
-                (d / collapsed[-1]["file"]).unlink(missing_ok=True)
+                set_aside(d, collapsed[-1]["file"])
                 collapsed[-1] = s
             else:
                 collapsed.append(s)
@@ -935,14 +957,12 @@ def annotate_slides(cfg: Config, d: Path, slides: list[dict]) -> list[dict]:
         keep = [s for s in items
                 if s.get("text") or not is_blank_frame(d / s["file"])]
         keeping = {s["file"] for s in keep}
-        bin_ = d / SLIDE_DIR / "dropped"
         for s in items:
-            if s["file"] not in keeping and (d / s["file"]).exists():
-                bin_.mkdir(parents=True, exist_ok=True)
-                (d / s["file"]).rename(bin_ / Path(s["file"]).name)
+            if s["file"] not in keeping:
+                set_aside(d, s["file"])
         if len(keep) < len(items):
             print(f"  set aside {len(items) - len(keep)} blank frame(s) in "
-                  f"{SLIDE_DIR}/dropped/")
+                  f"{SLIDE_DIR}/{DROPPED_DIR}/")
         return keep
 
     reading = cfg.ocr and ocr_available()
@@ -975,7 +995,7 @@ def annotate_slides(cfg: Config, d: Path, slides: list[dict]) -> list[dict]:
             a = text_key(merged[-1].get("text", []))
             b = text_key(s.get("text", []))
             if a and b and similarity(a, b) >= cfg.slide_text_similarity:
-                (d / merged[-1]["file"]).unlink(missing_ok=True)
+                set_aside(d, merged[-1]["file"])
                 merged[-1] = s
             else:
                 merged.append(s)
@@ -984,12 +1004,13 @@ def annotate_slides(cfg: Config, d: Path, slides: list[dict]) -> list[dict]:
         slides = merged
 
     if len(slides) > cfg.max_slides:
-        print(f"  {len(slides)} keyframes — thinning to {cfg.max_slides}")
+        print(f"  {len(slides)} keyframes — thinning to {cfg.max_slides}; the "
+              f"rest are kept in {SLIDE_DIR}/{DROPPED_DIR}/")
         step = len(slides) / cfg.max_slides
         keep = {int(i * step) for i in range(cfg.max_slides)}
         for i, s in enumerate(slides):
             if i not in keep:
-                (d / s["file"]).unlink(missing_ok=True)
+                set_aside(d, s["file"])
         slides = [s for i, s in enumerate(slides) if i in keep]
 
     (d / "slides.json").write_text(json.dumps(slides, indent=1))
@@ -1912,6 +1933,28 @@ def claude_analysis(cfg: Config, d: Path, body: str, prompt: str,
     return notes
 
 
+def write_notes(d: Path, out_name: str, notes: str) -> None:
+    """Write notes, moving any earlier version to .trash/ first.
+
+    Writing notes again replaced the file outright. On the claude backend
+    that discarded a result that had been paid for, and on any backend it
+    discarded whatever the earlier run got right that this one did not.
+    """
+    target = notes_path(d, out_name)
+    if target.exists() and target.read_text() != notes + "\n":
+        bin_ = d / ".trash"
+        bin_.mkdir(exist_ok=True)
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        dest = bin_ / f"{target.stem}.{stamp}.md"
+        n = 1
+        while dest.exists():
+            n += 1
+            dest = bin_ / f"{target.stem}.{stamp}-{n}.md"
+        target.rename(dest)
+        print(f"  earlier {out_name} kept in {dest.relative_to(d)}")
+    target.write_text(notes + "\n")
+
+
 def run_analysis(cfg: Config, d: Path, use_slides: bool = False,
                  prompt: str = DEFAULT_PROMPT, out_name: str = "notes.md") -> str:
     # transcript.md names no slides at all, so vision against it would be an
@@ -1996,12 +2039,12 @@ def run_analysis(cfg: Config, d: Path, use_slides: bool = False,
 
     if cfg.backend == "antigravity":
         notes = antigravity_analysis(cfg, d, body, prompt)
-        (d / out_name).write_text(notes + "\n")
+        write_notes(d, out_name, notes)
         return notes
 
     if cfg.backend == "claude":
         notes = claude_analysis(cfg, d, body, prompt, images)
-        (d / out_name).write_text(notes + "\n")
+        write_notes(d, out_name, notes)
         return notes
 
     try:
@@ -2050,7 +2093,7 @@ def run_analysis(cfg: Config, d: Path, use_slides: bool = False,
             f"{cfg.model} returned neither notes nor reasoning. Try a smaller "
             f"bundle, or a different model."
         )
-    (d / out_name).write_text(notes + "\n")
+    write_notes(d, out_name, notes)
     return notes
 
 
@@ -2176,13 +2219,29 @@ def written_for(path: Path, vid: str) -> bool:
             and "  - transcript" in fm)  # its companion transcript
 
 
+def notes_path(d: Path, notes_name: str) -> Path:
+    """The notes file of that name inside a lecture directory, and nowhere else.
+
+    The name arrives from the daemon's query string and from --notes.
+    `d / name` follows ../ and replaces d outright when the name is absolute,
+    so export copied any readable file into the vault on request.
+    """
+    name = notes_name or ""
+    if (Path(name).name != name or not name.startswith("notes")
+            or not name.endswith(".md")):
+        raise RuntimeError(
+            f"{notes_name!r} is not a notes file. Expected notes.md or "
+            f"notes-<label>.md.")
+    return d / name
+
+
 def export_obsidian(cfg: Config, d: Path, vault: Path, notes_name: str = "notes.md",
                     with_transcript: bool = False,
                     concept_index: dict | None = None) -> dict:
     if not (vault / ".obsidian").exists():
         raise RuntimeError(f"{vault} doesn't look like an Obsidian vault")
 
-    notes_file = d / notes_name
+    notes_file = notes_path(d, notes_name)
     if not notes_file.exists():
         raise RuntimeError(f"{notes_name} not found — write notes first")
 
@@ -2495,7 +2554,7 @@ def parse_concepts(notes_text: str) -> list[dict]:
 def build_concept_index(dirs: list[Path], notes_name: str = "notes.md") -> dict:
     index: dict[str, dict] = {}
     for d in dirs:
-        f = d / notes_name
+        f = notes_path(d, notes_name)
         if not f.exists():
             continue
         url = lecture_info(d).get("webpage_url") or (
@@ -2726,7 +2785,11 @@ def verify_notes(d: Path, notes_name: str = "notes.md") -> dict:
     attached to the wrong concept passes — but it does catch invented figures
     and citations pointing past the end of the lecture.
     """
-    notes_file, bundle = d / notes_name, d / "bundle.md"
+    try:
+        notes_file = notes_path(d, notes_name)
+    except RuntimeError as e:
+        return {"error": str(e)}
+    bundle = d / "bundle.md"
     if not notes_file.exists():
         return {"error": f"{notes_name} not found"}
     if not bundle.exists():
