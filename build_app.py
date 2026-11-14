@@ -87,6 +87,108 @@ fi
 """
 
 
+# The bundle's executable. macOS decides privacy permissions (Full Disk Access,
+# which yt-dlp needs to read Chrome's cookies on macOS 27) by the identity of
+# the process the app was launched as, and children are judged as that process.
+# When the executable was the shell script itself, that process was /bin/bash:
+# a grant for "Lecture Notes.app" matched nothing, and neither did one for
+# Python. A compiled, signed executable gives the grant something to attach to.
+#
+# It must spawn the script, not exec it. After exec the process would be bash
+# again. SIGTERM is passed on so that Quit still reaches the script's trap,
+# which stops the daemon.
+STUB_C = r"""
+#include <errno.h>
+#include <limits.h>
+#include <mach-o/dyld.h>
+#include <signal.h>
+#include <spawn.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+extern char **environ;
+static pid_t child = 0;
+
+static void forward(int sig) { if (child > 0) kill(child, sig); }
+
+int main(void) {
+    char exe[PATH_MAX], real[PATH_MAX], script[PATH_MAX];
+    uint32_t n = sizeof exe;
+    if (_NSGetExecutablePath(exe, &n) != 0 || !realpath(exe, real)) return 1;
+    char *slash = strrchr(real, '/');
+    if (!slash) return 1;
+    *slash = 0;
+    if (snprintf(script, sizeof script, "%s/../Resources/launcher.sh", real)
+            >= (int)sizeof script) return 1;
+
+    struct sigaction sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_handler = forward;
+    sigaction(SIGTERM, &sa, NULL);
+    sigaction(SIGINT, &sa, NULL);
+    sigaction(SIGHUP, &sa, NULL);
+
+    char *args[] = {"/bin/bash", script, NULL};
+    if (posix_spawn(&child, "/bin/bash", NULL, NULL, args, environ) != 0) return 1;
+
+    int status = 0;
+    while (waitpid(child, &status, 0) < 0) {
+        if (errno != EINTR) return 1;
+    }
+    return WIFEXITED(status) ? WEXITSTATUS(status) : 1;
+}
+"""
+
+
+def build_executable(macos: Path, resources: Path, script: str) -> str:
+    """Write the launcher script and the executable that runs it.
+
+    Returns the CFBundleExecutable name. Without a C compiler it falls back
+    to the script as the executable, which runs but cannot be given Full Disk
+    Access.
+    """
+    clang = shutil.which("clang")
+    if not clang:
+        print("  (clang missing: xcode-select --install. Building the script "
+              "launcher, which macOS 27 will not let read browser cookies.)")
+        launcher = macos / "launcher"
+        launcher.write_text(script)
+        launcher.chmod(0o755)
+        return "launcher"
+
+    sh = resources / "launcher.sh"
+    sh.write_text(script)
+    sh.chmod(0o755)
+    src = macos.parent / "stub.c"
+    src.write_text(STUB_C)
+    exe = macos / APP_NAME
+    proc = subprocess.run([clang, "-O2", "-Wall", "-o", str(exe), str(src)],
+                          capture_output=True, text=True)
+    src.unlink()
+    if proc.returncode != 0:
+        sys.exit(f"error: clang failed:\n{proc.stderr.strip()}")
+    return APP_NAME
+
+
+def sign(app: Path) -> None:
+    """Sign locally so the app has an identity a permission can attach to.
+
+    An ad-hoc signature identifies the app by a hash of its contents, so the
+    Full Disk Access entry stops matching after every rebuild and has to be
+    removed and added again.
+    """
+    proc = subprocess.run(
+        ["codesign", "--force", "--sign", "-", "--identifier", BUNDLE_ID, str(app)],
+        capture_output=True, text=True)
+    if proc.returncode != 0:
+        print(f"  (codesign failed: {proc.stderr.strip()[:200]})")
+    else:
+        print("  signed  : ad-hoc")
+
+
 def draw_icon(px: int = 1024):
     """A note card with a play badge — 'a lecture, written down'.
 
@@ -211,6 +313,10 @@ def main() -> None:
 
     icon = build_icon(resources)
 
+    executable = build_executable(
+        macos, resources,
+        LAUNCHER.format(root=f'"{ROOT}"', python=f'"{python}"', port=PORT))
+
     info = {
         "CFBundleName": APP_NAME,
         "CFBundleDisplayName": APP_NAME,
@@ -218,7 +324,7 @@ def main() -> None:
         "CFBundleVersion": "1.0",
         "CFBundleShortVersionString": "1.0",
         "CFBundlePackageType": "APPL",
-        "CFBundleExecutable": "launcher",
+        "CFBundleExecutable": executable,
         "NSHighResolutionCapable": True,
         "LSMinimumSystemVersion": "11.0",
     }
@@ -226,14 +332,9 @@ def main() -> None:
         info["CFBundleIconFile"] = icon
     (app / "Contents" / "Info.plist").write_bytes(plistlib.dumps(info))
 
-    launcher = macos / "launcher"
-    # shlex-style quoting so a path containing spaces survives.
-    launcher.write_text(LAUNCHER.format(
-        root=f'"{ROOT}"', python=f'"{python}"', port=PORT))
-    launcher.chmod(0o755)
-
     # Clear the quarantine flag so Gatekeeper doesn't refuse a locally built app.
     subprocess.run(["xattr", "-cr", str(app)], capture_output=True)
+    sign(app)
 
     print(f"  built   : {app}")
 
@@ -246,6 +347,10 @@ def main() -> None:
 
     print("\nDouble-click it. First launch may take a few seconds while the "
           "daemon starts.")
+    print("\nOn macOS 27, downloads need Full Disk Access for this app: System "
+          "Settings >\nPrivacy & Security > Full Disk Access. Remove any old "
+          f"'{APP_NAME}' entry, add\nthis build with +, then quit and reopen "
+          "the app. Repeat after every rebuild.")
 
 
 if __name__ == "__main__":
