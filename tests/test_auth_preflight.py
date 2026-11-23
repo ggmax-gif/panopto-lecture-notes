@@ -98,8 +98,27 @@ def test_the_macos_privacy_block_is_named_and_login_is_ruled_out(ls, cfg, fake_y
     fake_ytdlp(returncode=1, stderr=COOKIES_MISSING)
     with pytest.raises(RuntimeError) as e:
         ls.preflight_auth(cfg(), FOLDER)
-    assert "Full Disk Access" in str(e.value)
+    assert "Files & Folders" in str(e.value)
     assert "will not help" in str(e.value)
+
+
+def test_the_block_advice_names_this_python_under_launchd(ls, monkeypatch):
+    """Incident, November 2026: the message said Full Disk Access. With that
+    granted to the app the daemon was still refused. The switch that worked
+    is the per-process one in Files & Folders, for the Python launchd
+    started, and the advice has to name that Python."""
+    monkeypatch.setattr(ls.os, "getppid", lambda: 1)
+    msg = ls.browser_block_advice("chrome")
+    assert "Files & Folders" in msg and "Google Chrome" in msg
+    assert ls.sys.executable in msg
+    assert "does not cover" in msg     # Full Disk Access is ruled out
+
+
+def test_the_block_advice_names_the_terminal_otherwise(ls, monkeypatch):
+    monkeypatch.setattr(ls.os, "getppid", lambda: 4242)
+    msg = ls.browser_block_advice("chrome:Profile 1")
+    assert "terminal" in msg and "Google Chrome" in msg
+    assert ls.sys.executable not in msg
 
 
 def test_browser_data_blocked_reads_eperm_as_the_privacy_block(ls, monkeypatch):
@@ -140,7 +159,7 @@ def test_the_viewers_download_path_checks_the_session_first(ls, cfg, fake_ytdlp,
 
     lecture = ("https://recapexeter.cloud.panopto.eu/Panopto/Pages/Viewer.aspx"
                "?id=dc340e97-6b24-4109-8030-b41400e842da")
-    with pytest.raises(RuntimeError, match="Full Disk Access"):
+    with pytest.raises(RuntimeError, match="Files & Folders"):
         ls.fetch_url(cfg(), lecture)
     assert downloads == [], "nothing should be downloaded after a failed check"
 

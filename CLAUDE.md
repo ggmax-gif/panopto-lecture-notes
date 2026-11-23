@@ -18,7 +18,7 @@ The rule the history has converged on: **when a guard misjudges, move the file, 
 pip install -r requirements-dev.txt && pytest
 ```
 
-188 tests, about a second, no network, no ffmpeg, no Vision, no model server.
+190 tests, about a second, no network, no ffmpeg, no Vision, no model server.
 Every lecture, slide and vault is synthesised under `tmp_path` — `library/` is
 gitignored and absent from a fresh clone, so no test can touch a real
 recording while proving the code doesn't.
@@ -48,7 +48,7 @@ The expensive failures here were never crashes. They were success messages.
 
 - **Panopto's folder API answers an unauthenticated caller with an empty list**, and yt-dlp exits 0 having listed nothing. `sync` printed "sync complete" and the weekly autosync would have done nothing, every week, all term, without ever saying so. **Exit 0 with an empty listing is a failure.** Keep it that way.
 - **Every path that runs yt-dlp must call `preflight_auth` first.** `cmd_sync` skipped it, so an expired cookie surfaced as a bare exit code. `fetch_url`, behind the viewer's Add button, skipped it too and reported every failure as "usually an expired session", including the macOS 27 block on browser data that no login fixes.
-- **On macOS 27 yt-dlp says "could not find chrome cookies database" for two different causes**: a wrong browser name, and the OS refusing to let the process read the browser's folder. `browser_data_blocked` lists the folder to tell them apart (EPERM is the block). The fix for the block is Full Disk Access, not logging in.
+- **On macOS 27 yt-dlp says "could not find chrome cookies database" for two different causes**: a wrong browser name, and the OS refusing to let the process read the browser's folder. `browser_data_blocked` lists the folder to tell them apart (EPERM is the block). The fix is not logging in, and not Full Disk Access either: the app was refused with it granted. It is a per-process switch in Files & Folders, and it only applies to a Python launchd started. `browser_block_advice` names the process to switch on.
 - **Context budget arithmetic can go negative** when Ollama serves its 2,048 default. `stripped[:budget*3]` with a negative bound returned the *last* 71k characters — nearly the whole lecture pushed into a window a tenth its size, which is the exact silent eviction this code exists to prevent. Slice is clamped, and it refuses outright below `MIN_CONTEXT_BUDGET`.
 - **Ask the server what window it serves; don't trust config.** The configured number and the served number were not the same.
 - **The DELTA→SUMMARY fallback strips slide text from the pristine bundle**, not from the already-trimmed body. Refitting the trimmed body left the omission note empty, so the model was told nothing was missing while the summary prompt opened with "No slides are available."
@@ -75,7 +75,7 @@ Default is `qwen3.8:27b-mlx`, chosen by measurement rather than assumption: agai
 
 No CORS header stops another site reading a reply, not sending a request. `request_refusal` covers that: the Host must be 127.0.0.1 or localhost (a rebound domain is same-origin to the browser), a request labelled cross-site is refused, and a POST must be `application/json` because a text/plain POST skips the preflight. Anything that writes is a POST; export was a GET an image tag could trigger. A notes name from the query goes through `notes_path`, and `parse_panopto` refuses a host that only contains the word panopto.
 
-`build_app.py` compiles the bundle's executable and signs it ad hoc. macOS judges Full Disk Access by the process the app launched as; with a script as the executable that was `/bin/bash` and no grant matched. The executable must spawn the script, not exec it.
+`build_app.py` runs the daemon as a launchd job (`local.lecturescrape.serve`, plist in the bundle's Resources). As a child of the app, Python was refused Chrome's data even with Full Disk Access on the app; started by launchd it is judged as itself, and the Files & Folders switch for `python3.13` works. Don't move it back under the app. The launcher unloads the job on Quit. The bundle's executable is compiled and signed ad hoc so the app is not `/bin/bash` to macOS; it must spawn the script, not exec it.
 
 ## Commit messages
 

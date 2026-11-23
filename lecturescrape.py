@@ -270,6 +270,34 @@ BROWSER_DATA = {
 }
 
 
+BROWSER_NAMES = {"chrome": "Google Chrome", "brave": "Brave Browser",
+                 "edge": "Microsoft Edge", "chromium": "Chromium",
+                 "vivaldi": "Vivaldi"}
+
+
+def browser_block_advice(browser: str) -> str:
+    """Which switch to turn on when macOS blocks the browser's data.
+
+    macOS 27 judges this per process, in Files & Folders, and Full Disk Access
+    does not lift it: the app was refused with Full Disk Access granted. A
+    process started by launchd (the viewer's daemon, the weekly autosync) is
+    judged as its own executable, so the switch belongs to this Python. Run
+    from a terminal, it is judged as the terminal.
+    """
+    name = BROWSER_NAMES.get(browser.split(":")[0].lower(), browser)
+    if os.getppid() == 1:
+        who = f"{Path(sys.executable).name} ({sys.executable})"
+    else:
+        who = "the terminal app you ran this from"
+    return (
+        f"macOS is blocking this process from reading {name}'s data, so "
+        f"yt-dlp cannot read the Recap cookie. Logging in again will not "
+        f"help. In System Settings > Privacy & Security > Files & Folders, "
+        f"turn on {name} for {who}, then try again. Full Disk Access does "
+        f"not cover this."
+    )
+
+
 def browser_data_blocked(browser: str) -> bool:
     """Whether macOS privacy protection stops this process reading the
     browser's profile.
@@ -334,13 +362,7 @@ def preflight_auth(cfg: Config, url: str) -> None:
         )
     if "could not find" in err.lower() and "cookies" in err.lower():
         if browser_data_blocked(cfg.browser):
-            raise RuntimeError(
-                f"macOS is blocking access to {cfg.browser}'s data folder, so "
-                "yt-dlp cannot read the Recap cookie. Logging in again will "
-                "not help. Give the app you are running this from Full Disk "
-                "Access (System Settings > Privacy & Security), then quit and "
-                "reopen it."
-            )
+            raise RuntimeError(browser_block_advice(cfg.browser))
         raise RuntimeError(
             f"Couldn't find {cfg.browser}'s cookies. Check the browser name "
             "in config.yaml, and that you have logged into Recap in that "

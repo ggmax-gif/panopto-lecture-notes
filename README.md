@@ -109,9 +109,12 @@ original teaching material.
 ```
 
 Builds **Lecture Notes.app** and puts it on the Desktop. Double-click it: the
-daemon starts, and the viewer opens in a window with no address bar. Quitting
-the app stops the daemon — unless one was already running from a terminal, in
-which case it leaves it alone.
+daemon starts as a launchd job (`local.lecturescrape.serve`), and the viewer
+opens in a window with no address bar. Quitting the app unloads the job, which
+stops the daemon, unless one was already running from a terminal, in which
+case it leaves it alone. The daemon runs under launchd because macOS 27 only
+lets a launchd-started Python read Chrome's cookies (see Authentication).
+Its output goes to `~/Library/Logs/lecturescrape.log`.
 
 Two things a GUI app needs that a terminal one doesn't, both handled by the
 generated launcher:
@@ -350,7 +353,7 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-188 tests, about a second, no network. They need neither ffmpeg, yt-dlp, Vision
+190 tests, about a second, no network. They need neither ffmpeg, yt-dlp, Vision
 nor a model server: OCR is stubbed, `subprocess.run` is faked, and every
 lecture, slide and vault is synthesised in a temp directory — `library/` is
 gitignored and does not exist on a fresh clone, so it could not be a fixture
@@ -401,9 +404,11 @@ folder listing with an empty list, so `yt-dlp` exits successfully having found
 nothing, and an unguarded sync reports success having downloaded no lectures.
 `sync`, `autosync` and the viewer's Add button check for both before starting and say which one they hit.
 
-**macOS 27 blocks the cookie file itself.** It protects browser data folders the way it already protected Safari's, and yt-dlp then reports `could not find chrome cookies database` even while you are logged in. Logging in again changes nothing. Give Full Disk Access (System Settings > Privacy & Security) to whatever runs the download: `Lecture Notes.app` for the viewer, your terminal for the command line. The preflight check names this case when it sees it.
+**macOS 27 blocks the cookie file itself.** It protects browser data folders the way it already protected Safari's, and yt-dlp then reports `could not find chrome cookies database` even while you are logged in. Logging in again changes nothing, and neither does Full Disk Access: granted to the app, the download was still refused.
 
-macOS matches that permission to the process the app was launched as, so `build_app.py` compiles a small executable for the bundle and signs it locally. The signature is a hash of the app's contents: after every rebuild, remove the old `Lecture Notes` entry from Full Disk Access and add the app again. The weekly autosync runs Python directly and needs its own entry for that interpreter.
+The permission that works is per process, in System Settings > Privacy & Security > **Files & Folders**: turn on Google Chrome for `python3.13` (the interpreter the daemon runs under). The entry appears there after the first blocked attempt, sometimes with a "Data Access Blocked" notification whose Manage button opens it. It applies only when launchd started that Python, which is why the viewer's daemon and the weekly autosync both run as launchd jobs. Started from inside an app, the same Python is refused. From the command line, the switch to turn on is your terminal's. The preflight check names the right one when it sees the block.
+
+The Recap login cookie, `.ASPXAUTH`, lasts only for the browser session. Quit Chrome completely and downloads fail with "rejected the session" until you open Recap in Chrome again.
 Either way: log back into Recap and re-run.
 
 ## Use
